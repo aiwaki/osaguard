@@ -39,10 +39,6 @@ done < <(
     "$snapshot_path"
 )
 
-if [[ ${#keychains[@]} -eq 0 ]]; then
-  echo "Signing Keychain search-list snapshot is empty" >&2
-  exit 1
-fi
 for keychain in "${keychains[@]}"; do
   if [[ "$keychain" == *'"'* || "$keychain" == *\\* ]]; then
     echo "Signing Keychain search-list snapshot contains an unsupported escaped path" >&2
@@ -50,7 +46,13 @@ for keychain in "${keychains[@]}"; do
   fi
 done
 
-/usr/bin/security list-keychains -d user -s "${keychains[@]}"
+if [[ ${#keychains[@]} -eq 0 ]]; then
+  # The `security` CLI documents the keychain arguments to `-s` as optional;
+  # this restores the valid empty user search list used by fresh runners.
+  /usr/bin/security list-keychains -d user -s
+else
+  /usr/bin/security list-keychains -d user -s "${keychains[@]}"
+fi
 
 restored_keychains=()
 while IFS= read -r keychain; do

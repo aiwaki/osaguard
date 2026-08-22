@@ -37,6 +37,7 @@ test("release signing snapshots and restores the exact user Keychain search list
   ]);
 
   assert.match(importScript, /security list-keychains -d user > "\$search_list_snapshot"/);
+  assert.match(importScript, /\[\[ -f "\$search_list_snapshot" && ! -L "\$search_list_snapshot" \]\]/);
   assert.match(importScript, /OSAGUARD_CODE_SIGNING_SEARCH_LIST_SNAPSHOT=/);
   assert.match(importScript, /restore-release-signing-keychain-search-list\.sh/);
   assert.match(
@@ -46,6 +47,16 @@ test("release signing snapshots and restores the exact user Keychain search list
   assert.match(importScript, /if \[\[ "\$complete" != true && "\$recovery_required" != true \]\]/);
   assert.match(importScript, /Preserved temporary signing Keychain and search-list snapshot/);
   assert.match(restoreScript, /security list-keychains -d user -s "\$\{keychains\[@\]\}"/);
+  assert.match(
+    importScript,
+    /if \[\[ \$\{#existing_keychains\[@\]\} -eq 0 \]\]; then[\s\S]*?security list-keychains -d user -s "\$keychain_path"/,
+  );
+  assert.match(
+    restoreScript,
+    /if \[\[ \$\{#keychains\[@\]\} -eq 0 \]\]; then[\s\S]*?security list-keychains -d user -s\n/,
+  );
+  assert.doesNotMatch(importScript, /search list is empty; refusing/);
+  assert.doesNotMatch(restoreScript, /search-list snapshot is empty/);
   assert.match(restoreScript, /did not restore exactly/);
 
   const cleanupStart = workflow.indexOf("- name: Remove temporary release signing keychain");

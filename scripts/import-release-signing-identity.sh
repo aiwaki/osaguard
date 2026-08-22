@@ -166,7 +166,7 @@ fi
 
 umask 077
 /usr/bin/security list-keychains -d user > "$search_list_snapshot"
-[[ -s "$search_list_snapshot" && ! -L "$search_list_snapshot" ]]
+[[ -f "$search_list_snapshot" && ! -L "$search_list_snapshot" ]]
 [[ $(/usr/bin/stat -f '%Lp' "$search_list_snapshot") == "600" ]]
 existing_keychains=()
 while IFS= read -r existing_keychain; do
@@ -178,17 +178,19 @@ done < <(
     -e '/^$/d' \
     "$search_list_snapshot"
 )
-if [[ ${#existing_keychains[@]} -eq 0 ]]; then
-  echo "The existing user Keychain search list is empty; refusing to change it" >&2
-  exit 1
-fi
 for existing_keychain in "${existing_keychains[@]}"; do
   if [[ "$existing_keychain" == *'"'* || "$existing_keychain" == *\\* ]]; then
     echo "The existing user Keychain search list contains an unsupported escaped path" >&2
     exit 1
   fi
 done
-/usr/bin/security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}"
+if [[ ${#existing_keychains[@]} -eq 0 ]]; then
+  # `security list-keychains -s` deliberately accepts an empty list. A fresh
+  # GitHub-hosted runner can begin in precisely that valid state.
+  /usr/bin/security list-keychains -d user -s "$keychain_path"
+else
+  /usr/bin/security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}"
+fi
 search_list_changed=true
 
 /bin/rm -f -- "$p12_path" "$certificate_path"

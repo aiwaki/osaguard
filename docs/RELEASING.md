@@ -59,8 +59,9 @@ isolated GitHub-hosted runner and is deleted with the Keychain; the partition
 list still restricts the intended Apple signing-tool path. The job validates the
 fixed certificate fingerprint and expiry there and deletes the P12 immediately.
 It does not write macOS user, admin, or system Trust Settings. Only after that
-validation does it snapshot and extend the runner's Keychain search list. After
-a verified restoration, an `always()` cleanup step deletes the temporary
+validation does it snapshot and extend the runner's Keychain search list,
+including the valid empty list used by a fresh runner. After a verified
+restoration, an `always()` cleanup step deletes the temporary
 Keychain. If restoration fails, the job deliberately preserves the Keychain and
 recovery snapshot instead of destroying the evidence needed to repair the
 runner. Commands never print the P12 or password.
@@ -99,13 +100,14 @@ after import. Its broad-access import is acceptable only because the Keychain
 is newly created in a fresh GitHub-hosted runner; it must not be reused on a
 local, self-hosted, shared, or long-lived machine. It validates the fingerprint,
 certificate expiry, and private-key pairing in that disposable Keychain before
-it snapshots the runner's user Keychain search list. If restoration fails, it
-intentionally preserves both the temporary Keychain and the mode-0600 snapshot,
-fails the job, and logs the exact recovery command. Workflow cleanup follows the
-same rule: it deletes neither file until it has verified that the original
-ordered search list was restored. A stronger future model must use a signing
-service or managed key that can import or use the identity without exposing a
-P12 passphrase in process arguments.
+it snapshots the runner's user Keychain search list. An empty list is a valid
+snapshot and is restored as empty; a non-empty list is restored in the exact
+saved order. If restoration fails, it intentionally preserves both the temporary
+Keychain and the mode-0600 snapshot, fails the job, and logs the exact recovery
+command. Workflow cleanup follows the same rule: it deletes neither file until
+it has verified that the original ordered search list was restored. A stronger
+future model must use a signing service or managed key that can import or use
+the identity without exposing a P12 passphrase in process arguments.
 
 ## Artifact contract
 
