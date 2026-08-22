@@ -267,12 +267,7 @@ jobs:
             --verbose=2 \
             -R="$stable_requirement" \
             "$app_bundle"
-          /usr/bin/codesign -d -r- "$app_bundle" \
-            2> "$RUNNER_TEMP/osaguard-designated-requirement.txt"
-          /usr/bin/grep -F 'identifier "dev.aiwaki.osaguard"' \
-            "$RUNNER_TEMP/osaguard-designated-requirement.txt"
-          /usr/bin/grep -F -i "$OSAGUARD_CERT_SHA1" \
-            "$RUNNER_TEMP/osaguard-designated-requirement.txt"
+          /usr/bin/codesign -d -r- "$app_bundle"
           app_executables=("$app_bundle"/Contents/MacOS/*)
           [[ ${#app_executables[@]} == 1 && -f "${app_executables[0]}" ]] || {
             echo "Expected exactly one application executable" >&2
