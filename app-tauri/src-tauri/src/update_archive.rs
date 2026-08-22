@@ -323,8 +323,10 @@ mod tests {
         assert!(validate_compressed_size(0).is_err());
         assert!(validate_compressed_size(MAX_COMPRESSED_BYTES + 1).is_err());
 
-        let mut budget = ArchiveBudget::default();
-        budget.entries = MAX_ARCHIVE_ENTRIES;
+        let mut budget = ArchiveBudget {
+            entries: MAX_ARCHIVE_ENTRIES,
+            ..ArchiveBudget::default()
+        };
         assert!(budget.observe(0).is_err());
         let mut budget = ArchiveBudget::default();
         assert!(budget.observe(MAX_ENTRY_BYTES + 1).is_err());
