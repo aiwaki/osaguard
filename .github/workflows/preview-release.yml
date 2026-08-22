@@ -1,0 +1,253 @@
+name: Publish macOS preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      preview:
+        description: Exact preview sequence to publish from main (currently 1)
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: write
+  attestations: write
+  id-token: write
+
+concurrency:
+  group: osaguard-preview-release
+  cancel-in-progress: false
+
+# This is intentionally a preview-only path, modelled on Slipstream's preview
+# releases. It uses the GitHub-hosted macOS runner's ad-hoc signature and never
+# imports a certificate, opens a Keychain, or publishes a stable release.
+jobs:
+  publish-preview:
+    name: Build and publish Apple Silicon preview
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Require a main dispatch and the first preview sequence
+        env:
+          PREVIEW: ${{ inputs.preview }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || {
+            echo "Preview releases must be dispatched from main" >&2
+            exit 1
+          }
+          [[ "$PREVIEW" == 1 ]] || {
+            echo "The current source only authorizes preview sequence 1" >&2
+            exit 1
+          }
+
+      - name: Check out immutable main source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: app-tauri/package-lock.json
+
+      - name: Resolve exact preview identity
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./app-tauri/package.json').version")
+          [[ "$version" == 0.1.0 ]] || {
+            echo "Preview 1 must package OsaGuard 0.1.0; found $version" >&2
+            exit 1
+          }
+          tag="v${version}-preview.1"
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          existing_tag=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/$tag" \
+            --jq "[.[] | select(.ref == \"refs/tags/$tag\")] | length")
+          existing_release=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$tag\") | .id")
+          [[ "$existing_tag" == 0 && -z "$existing_release" ]] || {
+            echo "Preview tag or release already exists: $tag" >&2
+            exit 1
+          }
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "commit=$GITHUB_SHA"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Require a successful exact-main CI run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=100" \
+            --jq ".workflow_runs[] | select(.head_sha == \"$GITHUB_SHA\") | select(.conclusion == \"success\") | .id" \
+            | sed -n '1p')
+          [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || {
+            echo "No successful CI run exists for $GITHUB_SHA" >&2
+            exit 1
+          }
+          run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$run_id")
+          python3 -c '
+          import json, sys
+          run = json.load(sys.stdin)
+          expected_sha, repository = sys.argv[1:]
+          expected = {
+              "head_sha": expected_sha,
+              "head_branch": "main",
+              "event": "push",
+              "conclusion": "success",
+              "path": ".github/workflows/ci.yml",
+          }
+          for key, value in expected.items():
+              if run.get(key) != value:
+                  raise SystemExit(f"CI run has invalid {key}: {run.get(key)!r}")
+          if (run.get("head_repository") or {}).get("full_name") != repository:
+              raise SystemExit("CI run belongs to a different repository")
+          ' "$GITHUB_SHA" "$GITHUB_REPOSITORY" <<< "$run"
+
+      - name: Set up Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1d1eb14921d9c2d8ea575663e5fe3a0b57868a05 # 1.89.0
+        with:
+          components: clippy,rustfmt
+          targets: aarch64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: app-tauri/src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: app-tauri
+        run: npm ci
+
+      - name: Build preview artifacts
+        working-directory: app-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          node ../scripts/check-release-version.mjs
+          npm test
+          npm run build:local
+
+          bundle_directory=src-tauri/target/release/bundle
+          disk_images=()
+          while IFS= read -r disk_image; do
+            disk_images+=("$disk_image")
+          done < <(/usr/bin/find "$bundle_directory" -type f -name '*.dmg' -print)
+          [[ ${#disk_images[@]} == 1 ]] || {
+            echo "Expected exactly one DMG, found ${#disk_images[@]}" >&2
+            exit 1
+          }
+          app_bundle="$bundle_directory/macos/OsaGuard.app"
+          [[ -d "$app_bundle" ]] || {
+            echo "Expected app bundle is missing" >&2
+            exit 1
+          }
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_bundle"
+          app_executables=("$app_bundle"/Contents/MacOS/*)
+          [[ ${#app_executables[@]} == 1 && -f "${app_executables[0]}" ]] || {
+            echo "Expected exactly one application executable" >&2
+            exit 1
+          }
+          [[ "$(/usr/bin/lipo -archs "${app_executables[0]}")" == arm64 ]] || {
+            echo "Preview artifact is not Apple Silicon only" >&2
+            exit 1
+          }
+
+          release_dir=release-assets
+          /bin/mkdir "$release_dir"
+          asset_prefix="OsaGuard_${{ steps.release.outputs.version }}_preview.1_aarch64"
+          /bin/cp "${disk_images[0]}" "$release_dir/${asset_prefix}.dmg"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
+            "$app_bundle" "$release_dir/${asset_prefix}.zip"
+          (
+            cd "$release_dir"
+            /usr/bin/shasum -a 256 "${asset_prefix}.dmg" "${asset_prefix}.zip" > SHA256SUMS
+          )
+
+      - name: Attest preview artifacts
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: app-tauri/release-assets/*
+
+      - name: Create, validate, and publish the exact preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          notes="$RUNNER_TEMP/osaguard-preview-notes.md"
+          {
+            printf '%s\n\n' "OsaGuard ${RELEASE_VERSION} — Preview 1"
+            printf '%s\n\n' 'Предварительная сборка для Apple Silicon. Это не stable-канал и не нотариально заверенная Apple сборка.'
+            printf '%s\n\n' 'Preview build for Apple Silicon. This is not the stable channel and is not notarized by Apple.'
+            printf '%s\n' '## Установка / Installation'
+            printf '%s\n' "- Скачайте \`OsaGuard_${RELEASE_VERSION}_preview.1_aarch64.dmg\`, перенесите OsaGuard в «Программы» и запускайте только из этой папки. / Download \`OsaGuard_${RELEASE_VERSION}_preview.1_aarch64.dmg\`, move OsaGuard to Applications, and run it only from there."
+            printf '%s\n' '- macOS может предупредить, что приложение не нотариально. Не отключайте Gatekeeper глобально; используйте только контекстное меню Finder → «Открыть», если доверяете этому exact preview. / macOS may warn because the app is not notarized. Do not disable Gatekeeper globally; use Finder’s contextual Open only if you trust this exact preview.'
+            printf '%s\n' '- Обновления этой первой preview устанавливаются вручную: встроенный updater намеренно не настроен на GitHub Latest. / Updates for this first preview are manual: the built-in updater is intentionally not pointed at GitHub Latest.'
+            printf '%s\n\n' '## Критическое предупреждение / Critical warning'
+            printf '%s\n\n' 'После настройки OsaGuard может автоматически отправить пароль администратора в подходящее окно AppleScript. Код, уже запущенный от вашего пользователя, может этим получить root без нового ручного подтверждения. After setup, OsaGuard can automatically submit an administrator password to a matching AppleScript dialog. Code already running as your user can thereby obtain root without a new manual confirmation.'
+            printf '%s\n' "Source commit: ${RELEASE_COMMIT}"
+          } > "$notes"
+
+          release_id=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+            -f tag_name="$RELEASE_TAG" \
+            -f target_commitish="$RELEASE_COMMIT" \
+            -f name="OsaGuard ${RELEASE_VERSION} (Preview 1)" \
+            -f body="$(< "$notes")" \
+            -F draft=true \
+            -F prerelease=true \
+            --jq '.id')
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
+          gh release upload "$RELEASE_TAG" \
+            app-tauri/release-assets/* \
+            --clobber
+
+          api="repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+          [[ "$(gh api "$api" --jq '.tag_name')" == "$RELEASE_TAG" ]]
+          [[ "$(gh api "$api" --jq '.target_commitish')" == "$RELEASE_COMMIT" ]]
+          [[ "$(gh api "$api" --jq '.draft')" == true ]]
+          [[ "$(gh api "$api" --jq '.prerelease')" == true ]]
+          expected_assets=$(printf '%s\n' \
+            "OsaGuard_${RELEASE_VERSION}_preview.1_aarch64.dmg" \
+            "OsaGuard_${RELEASE_VERSION}_preview.1_aarch64.zip" \
+            SHA256SUMS | LC_ALL=C sort)
+          actual_assets=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" \
+            --jq '.[].name' | LC_ALL=C sort)
+          [[ "$actual_assets" == "$expected_assets" ]] || {
+            echo "Unexpected preview asset set" >&2
+            exit 1
+          }
+
+          gh api --method PATCH "$api" \
+            -F draft=false \
+            -F prerelease=true \
+            -f make_latest=false \
+            --silent
+          [[ "$(gh api "$api" --jq '.draft')" == false ]]
+          [[ "$(gh api "$api" --jq '.prerelease')" == true ]]
+          [[ "$(gh api "$api" --jq '.make_latest')" != true ]]

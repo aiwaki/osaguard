@@ -7,12 +7,16 @@ import test from "node:test";
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryDirectory = dirname(scriptsDirectory);
 
-test("stable binary release and publication remain fail-closed without Apple credentials", async () => {
-  const [releaseWorkflow, publishWorkflow, releaseGuide, englishReadme] =
+test("stable binary release remains closed while hosted ad-hoc preview publication is explicit", async () => {
+  const [releaseWorkflow, publishWorkflow, previewWorkflow, releaseGuide, englishReadme] =
     await Promise.all([
     readFile(join(repositoryDirectory, ".github", "workflows", "release.yml"), "utf8"),
     readFile(
       join(repositoryDirectory, ".github", "workflows", "publish-release.yml"),
+      "utf8",
+    ),
+    readFile(
+      join(repositoryDirectory, ".github", "workflows", "preview-release.yml"),
       "utf8",
     ),
     readFile(join(repositoryDirectory, "docs", "RELEASING.md"), "utf8"),
@@ -27,9 +31,17 @@ test("stable binary release and publication remain fail-closed without Apple cre
     assert.doesNotMatch(workflow, /gh release|draft=false|make_latest=true/);
   }
 
-  assert.match(releaseGuide, /^## Public-app release gate: closed$/m);
-  assert.match(releaseGuide, /there must be \*\*no\*\* public\s+OsaGuard DMG/i);
-  assert.doesNotMatch(releaseGuide, /Public OsaGuard releases use one permanent self-signed/i);
-  assert.match(englishReadme, /there is no public end-user app yet/i);
-  assert.doesNotMatch(englishReadme, /Download the DMG for your Mac from the/i);
+  assert.match(releaseGuide, /^## Stable channel: closed$/m);
+  assert.match(releaseGuide, /^## Public preview channel$/m);
+  assert.doesNotMatch(releaseGuide, /permanent self-signed/i);
+  assert.match(englishReadme, /public preview/i);
+
+  assert.match(previewWorkflow, /workflow_dispatch/);
+  assert.match(previewWorkflow, /runs-on: macos-14/);
+  assert.match(previewWorkflow, /prerelease=true/);
+  assert.match(previewWorkflow, /make_latest=false/);
+  assert.match(previewWorkflow, /npm run build:local/);
+  assert.match(previewWorkflow, /actions\/attest@[0-9a-f]{40}/);
+  assert.doesNotMatch(previewWorkflow, /\bsecrets\./);
+  assert.doesNotMatch(previewWorkflow, /\bsecurity\b|\bnotary\b/i);
 });

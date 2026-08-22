@@ -23,12 +23,14 @@ make check
 make tray-build
 ```
 
-Local app bundles are ad-hoc signed and not notarized. The public binary-release
-and publication workflows are deliberately fail-closed until Apple-issued
-Developer ID signing, notarization, and stapling are available and qualified.
-Do not add a self-signed, locally trusted, or Finder-bypass fallback. Use
-throwaway test data. Do not test with a real administrator password unless a
-specific local integration test requires it and you understand the cleanup.
+Local app bundles and the public preview are ad-hoc signed and not notarized.
+The public preview workflow is limited to a GitHub-hosted Apple-Silicon runner,
+manual installation, and an explicit prerelease. The stable binary workflow
+remains fail-closed until Apple-issued Developer ID signing, notarization, and
+stapling are available and qualified. Do not add a self-signed certificate,
+locally trusted identity, or automatic updater fallback. Use throwaway test data.
+Do not test with a real administrator password unless a specific local
+integration test requires it and you understand the cleanup.
 
 ## Design rules
 

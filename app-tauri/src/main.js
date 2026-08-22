@@ -83,7 +83,7 @@ const copy = {
       version ? `OsaGuard ${version} is ready to install` : "Update is ready to install",
     updateInstalling: "Installing and restarting…",
     updateCurrent: "Up to date",
-    updateUnavailable: "Updates unavailable in this test build",
+    updateUnavailable: "Updates unavailable in this preview build",
     updateBusy: "Another update action is already running",
     updateVersionChanged:
       "A newer update became available. Review the new version before installing it",
@@ -211,7 +211,7 @@ const copy = {
       version ? `OsaGuard ${version} готов к установке` : "Обновление готово к установке",
     updateInstalling: "Установка и перезапуск…",
     updateCurrent: "Установлена последняя версия",
-    updateUnavailable: "Обновления недоступны в тестовой сборке",
+    updateUnavailable: "Обновления недоступны в этой preview-сборке",
     updateBusy: "Другое действие с обновлением уже выполняется",
     updateVersionChanged:
       "Появилась другая версия. Перед установкой проверьте новое обновление",

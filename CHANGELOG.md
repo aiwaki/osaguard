@@ -6,6 +6,21 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-preview.1] - 2026-08-22
+
+### Added
+
+- public Apple-Silicon GitHub Preview with an ad-hoc DMG, ZIP alternative,
+  SHA-256 checksums, and GitHub Actions provenance.
+- a hosted-only preview publication workflow that creates an explicit
+  prerelease and never marks it as Latest.
+
+### Security
+
+- preview distribution does not import a signing certificate, touch a Keychain,
+  or configure an updater endpoint. Installation and later preview updates are
+  manual.
+
 ## [0.1.0] - 2026-08-22
 
 ### Added
@@ -17,9 +32,8 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - menu-bar application prototype and launch-at-login integration.
 - exact-rule developer tooling and security qualification tests.
 - beginner documentation in English and Russian.
-- fail-closed GitHub workflows that prevent binary release creation and
-  publication until Apple-issued Developer ID signing, notarization, and
-  stapling can be qualified.
+- a fail-closed stable GitHub release workflow pending Apple-issued Developer ID
+  signing, notarization, and stapling.
 - source-level Tauri updater implementation and release documentation, kept
   disabled until a real authenticated public channel exists.
 
@@ -34,8 +48,9 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already running in the configured user account.
 - password input is kept outside Tauri JavaScript, command arguments, environment
   variables, logs, and the clipboard.
-- the earlier self-signed-P12 release experiment is retired. No binary release
-  workflow can access it, and no public DMG or updater channel exists.
+- the earlier self-signed-P12 release experiment is retired. No public workflow
+  can access it; previews use GitHub-hosted ad-hoc bundles only.
 
 [Unreleased]: https://github.com/aiwaki/osaguard/commits/main
+[0.1.0-preview.1]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.0-preview.1
 [0.1.0]: https://github.com/aiwaki/osaguard/tree/main

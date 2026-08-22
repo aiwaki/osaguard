@@ -41,11 +41,12 @@ behavior from OsaGuard or macOS Login Items settings.
 OsaGuard does not include analytics, advertising, telemetry, cloud password
 storage, or cloud synchronization.
 
-Official release builds contact GitHub Releases to check signed update metadata
-and, when you approve an update, to download the package. GitHub may receive
-normal connection information such as your IP address and user agent; GitHub's
-own privacy terms apply. Local source builds intentionally do not include the
-official update channel.
+The first public preview does not contact GitHub for updates: its updater is
+disabled and later previews are installed manually. A future signed updater
+channel would contact GitHub Releases to check metadata and, only after your
+approval, download a package. GitHub may then receive normal connection
+information such as your IP address and user agent; GitHub's own privacy terms
+apply.
 
 OsaGuard itself does not upload prompts, passwords, application lists, or usage
 history.

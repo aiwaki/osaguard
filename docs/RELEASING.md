@@ -1,104 +1,69 @@
 # Releasing OsaGuard
 
-## Public-app release gate: closed
+## Public preview channel
 
-OsaGuard's source repository may be public. Its macOS application distribution
-is not public yet.
+OsaGuard may be published as an explicitly labelled **GitHub prerelease** without
+an Apple Developer membership. This matches the project's Slipstream preview
+model, not a stable macOS distribution channel.
 
-The project currently has no Apple Developer Program membership, Developer ID
-Application certificate, or Apple notarization credentials. Until all three
-exist and the qualification below has passed, there must be **no** public
-OsaGuard DMG, `.app.tar.gz` updater payload, `latest.json`, release draft
-advertised as installable, or GitHub “Latest” binary release.
+The current first preview is `v0.1.0-preview.1`:
 
-This is a fail-closed product boundary, not a temporary Gatekeeper workaround.
-Do not substitute any of the following for Apple-issued distribution identity:
+- Apple Silicon and macOS 13+ only;
+- built on a disposable GitHub-hosted `macos-14` runner;
+- ad-hoc signed with Tauri's `signingIdentity: "-"` — no P12, Keychain import,
+  Developer ID identity, or local maintainer Mac is involved;
+- distributed only as a manual-install DMG and ZIP with `SHA256SUMS` and GitHub
+  Actions provenance;
+- marked `prerelease: true` and `make_latest: false`;
+- not notarized, not a stable release, and not an identity-continuity promise
+  for Accessibility or Keychain items;
+- updater-disabled. GitHub's `releases/latest` does not identify prereleases,
+  so it is not an acceptable preview update endpoint.
 
-- an ad-hoc signature;
-- a self-signed certificate or a locally trusted certificate;
-- a Finder right-click → Open instruction;
-- a locally generated P12, including the retired bootstrap helper;
-- a GitHub Actions Keychain import or a successful `codesign` invocation.
+The public README and release notes must state all of those boundaries, include
+the passwordless-root warning, and tell users not to disable Gatekeeper globally.
+Finder's contextual **Open** is an installation decision for a specific trusted
+preview, not a general trust workaround.
 
-Those techniques may be useful for local development, but do not authenticate
-OsaGuard to users or satisfy notarized public distribution. They must never be
-used to produce a user-facing release or updater channel.
+### Preview publication procedure
 
-## What is allowed before Apple distribution credentials exist
+1. Update the README files, changelog, security notes, and preview sequence.
+2. Push `main`; wait for the exact successful `ci.yml` run.
+3. Manually dispatch **Publish macOS preview** from `main`. It must reject every
+   other ref and an absent or mismatched CI result.
+4. The GitHub-hosted runner builds the same immutable source, creates a draft,
+   uploads exactly the DMG, ZIP, and checksum manifest, validates their names
+   and the release commit, attests the artifacts, and publishes that exact draft
+   as a prerelease.
+5. Verify the public release page, SHA-256 manifest, source commit, architecture,
+   and prerelease flag. Never replace a published preview asset; use a new
+   preview sequence instead.
 
-- Publish and review source code, documentation, tests, and CI results.
-- Build local ad-hoc bundles for controlled development only.
-- Exercise updater code only in its local test-build state, where no public
-  endpoint or trusted distribution channel is configured.
-- Make a clearly labelled source-only tag if needed for development history.
-  It must not contain app assets, updater metadata, an installation guide, or a
-  claim that it is the latest user release.
-
-The release workflows and retired credential-bootstrap scaffolding in this
-repository are not authorization to bypass this gate. Do not dispatch a binary
-release workflow while the gate is closed. Do not upload or use signing material
-to create a public updater channel for an app that cannot yet be authenticated
-and notarized to users.
-
-## Preconditions for opening the gate
-
-Only revisit public app distribution after the project has all of the following:
-
-1. an active Apple Developer Program membership owned or controlled by the
-   project maintainer;
-2. an Apple-issued **Developer ID Application** certificate and secure handling
-   of its private key;
-3. notarization credentials (for example, an App Store Connect API key or an
-   Apple app-specific password plus the required team data) stored only in a
-   protected GitHub Actions environment;
-4. a documented, reviewable key-rotation and incident response process for both
-   the Developer ID identity and the separate Tauri updater signing key; and
-5. clean-machine qualification on Apple Silicon and Intel macOS.
-
-Before enabling a release workflow, remove or permanently disable every
-self-signed public-release path and replace it with Developer ID signing,
-notarization, and stapling. The GitHub environment must restrict releases to
-protected `main`, use only pinned actions, and expose private material only to
-the explicitly reviewed release job. Never run release signing on a shared or
+No preview workflow may access `secrets.*`, import a certificate, modify a
+Keychain search list, or use a self-signed P12. Do not run preview signing on a
 self-hosted runner.
 
-## Future release procedure
+## Stable channel: closed
 
-Once the gate has been opened, the procedure must be updated and then followed
-for every public version:
+The stable binary channel remains closed until the project deliberately has all
+of the following:
 
-1. Update all version locations, RU/EN user documentation, and `CHANGELOG.md`.
-2. Run source, Go, Rust, frontend, dependency, and packaging checks from the
-   exact `main` commit being released.
-3. Build Apple Silicon and Intel bundles with the Apple-issued Developer ID
-   identity and hardened runtime. Verify the bundle identifier, executable
-   layout, architecture, designated requirement, and signature on the resulting
-   app and DMG.
-4. Submit the exact distributable to Apple notarization, wait for acceptance,
-   staple the resulting ticket, and verify stapling. A successful signature is
-   not a notarization result.
-5. Create the Tauri updater archives and detached signatures with the permanent
-   updater key. Generate immutable `latest.json` entries that refer only to the
-   exact release assets. Keep the updater code disabled unless its embedded
-   public key and endpoint correspond to this authenticated channel.
-6. In a draft release, verify checksums, updater signatures, Developer ID
-   identity, notarization/stapling, version, architectures, and the app inside
-   each DMG. Record reproducible evidence; a draft is not a user release.
-7. Test a first installation on clean Apple Silicon and Intel machines. Then
-   test an N → N+1 canary: notification, tray fallback, explicit confirmation,
-   offline behaviour, corrupted payload rejection, failed-install watcher
-   recovery, restart, Accessibility continuity, and retrieval of the existing
-   Keychain item before re-saving a password.
-8. Publish only after a maintainer explicitly reviews the draft evidence. Never
-   replace a published app asset or updater manifest; issue a higher version.
+1. an active Apple Developer Program membership owned by the maintainer;
+2. an Apple-issued **Developer ID Application** certificate and safe private-key
+   custody;
+3. notarization credentials and a successful submission plus stapling;
+4. a reviewed updater key, an authenticated stable appcast, and an `N → N+1`
+   test covering notification, explicit install confirmation, failed-update
+   recovery, Accessibility, and saved-password continuity;
+5. clean-machine qualification on Apple Silicon and Intel macOS.
 
-The source-level updater implementation does not prove that any of these steps
-have happened. Its design is documented in the code and user READMEs, but no
-public updater channel exists at this time.
+Until then, `.github/workflows/release.yml` and
+`.github/workflows/publish-release.yml` intentionally fail. A preview must never
+be reclassified as stable or Latest merely because its ad-hoc signature verifies
+on the build runner.
 
 ## References
 
-- [Apple: Signing macOS software](https://developer.apple.com/developer-id/)
-- [Apple: Notarizing macOS software before distribution](https://developer.apple.com/documentation/security/notarizing_macos_software_before_distribution)
+- [Tauri macOS signing](https://v2.tauri.app/distribute/sign/macos/)
 - [Tauri updater](https://v2.tauri.app/plugin/updater/)
-- [GitHub Actions: environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
+- [GitHub Actions attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations)

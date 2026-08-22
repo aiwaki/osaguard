@@ -2,12 +2,12 @@
 
 ## Distribution status
 
-This is source and local-development qualification evidence, **not** a public
-application release record. OsaGuard currently has no Apple Developer Program
-membership, Developer ID Application certificate, notarization ticket, public
-DMG, or updater channel. The available evidence must not be used to advertise
-or publish a user-facing binary. See [Releasing OsaGuard](RELEASING.md) for the
-closed release gate.
+This is source, local-development, and preview-publication qualification
+evidence. OsaGuard has no Apple Developer Program membership, Developer ID
+Application certificate, or notarization ticket. Public preview builds are
+therefore ad-hoc signed, manual-install Apple-Silicon prereleases; they are not
+a stable channel and do not have an updater endpoint. See
+[Releasing OsaGuard](RELEASING.md) for the exact boundary.
 
 ## 2026-08-13 — macOS 26.5.2 (25F84), Apple Silicon
 
@@ -52,7 +52,7 @@ The Tauri v2 app was qualified with these current architectural properties:
 Rust tests and `cargo clippy --all-targets --all-features -- -D warnings` passed
 for this implementation. The local app is ad-hoc signed and is not notarized.
 
-### Local ad-hoc identity; no public release identity
+### Ad-hoc preview identity; no stable release identity
 
 An ad-hoc rebuild has a new code identity from TCC's perspective. Accessibility
 must be tested only after removing the old OsaGuard row, installing the rebuilt
@@ -60,11 +60,11 @@ app in `/Applications`, launching that exact app, requesting access again, and
 enabling the new row. An old enabled-looking row is not proof that the rebuilt
 app is trusted.
 
-No public release identity is provisioned. A self-signed certificate, ad-hoc
-signature, local trust change, or Finder bypass is not a substitute for
-Developer ID signing and notarization and must not be used to create a public
-release. There is likewise no current TCC/Keychain-continuity claim across
-versions and no public updater archive to authenticate.
+No stable public release identity is provisioned. A self-signed certificate,
+ad-hoc signature, local trust change, or Finder contextual Open is not a
+substitute for Developer ID signing and notarization. The GitHub preview is
+deliberately labelled ad-hoc and makes no TCC/Keychain-continuity claim across
+versions; it has no public updater archive to authenticate.
 
 ## Universal watcher checks
 
@@ -204,17 +204,17 @@ This live gate must also confirm that setup status advances after the Tauri main
 process receives the new TCC grant. It must not be performed by automation with
 the user's real password.
 
-There is no qualified binary-release workflow today. The earlier self-signed-P12
-release path is retired for public distribution and is not evidence of a
-shippable identity. No DMG, updater archive, `latest.json`, release draft, or
-public tag may be presented as installable while the release gate is closed.
+The public preview workflow builds an ad-hoc Apple-Silicon DMG and ZIP only on a
+GitHub-hosted runner, publishes an explicit prerelease with checksums and
+attestation, and requires a successful exact-main CI run. It uses no P12,
+Keychain import, updater secret, or Apple credential. That is evidence for a
+manual preview only, not a shippable stable identity.
 
-If the project later obtains Apple distribution credentials, the remaining
-external gates are Developer ID signing, Apple notarization and stapling, a
-reviewed updater key and endpoint, a protected draft release, and physical
-first-install/N → N+1 canaries on Apple Silicon and Intel. Those canaries must
-cover native notification and tray fallback, explicit install confirmation,
-restart, offline and corrupted-payload failures, watcher recovery, and retained
-Accessibility/Keychain access before any password is re-saved. The exact future
-procedure is in [Releasing OsaGuard](RELEASING.md); none of those gates is
-claimed by this local ad-hoc qualification.
+The remaining stable-channel gates are Developer ID signing, Apple notarization
+and stapling, a reviewed updater key and endpoint, a protected draft release,
+and physical first-install/N → N+1 canaries on Apple Silicon and Intel. Those
+canaries must cover native notification and tray fallback, explicit install
+confirmation, restart, offline and corrupted-payload failures, watcher recovery,
+and retained Accessibility/Keychain access before any password is re-saved. The
+exact stable procedure is in [Releasing OsaGuard](RELEASING.md); none of those
+gates is claimed by this ad-hoc preview qualification.

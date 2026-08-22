@@ -182,8 +182,8 @@ impl Locale {
 
     fn updates_unavailable(self) -> &'static str {
         match self {
-            Self::En => "Updates unavailable in this test build",
-            Self::Ru => "Обновления недоступны в тестовой сборке",
+            Self::En => "Updates unavailable in this preview build",
+            Self::Ru => "Обновления недоступны в этой preview-сборке",
         }
     }
 
@@ -1988,7 +1988,7 @@ async fn install_update(
     if !updater_configured(&app) {
         let status = UpdateStatus::default();
         set_update_status(&app, status.clone());
-        return Err("updates are unavailable in this test build".into());
+        return Err("updates are unavailable in this preview build".into());
     }
     if acknowledgement != INSTALL_UPDATE_CONFIRMATION {
         let status = update_ready_with_error(&expected_version, "confirmation_required");

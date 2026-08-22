@@ -79,11 +79,10 @@ choose an executable path, watcher account, or native bridge operation.
   removed.
 
 The current Keychain integration uses the file-based macOS Keychain with an
-explicit caller ACL. There is no released public app identity today. Local
-ad-hoc builds do not provide a cross-version identity guarantee, so a future
-Apple-signed release must separately qualify TCC and Keychain continuity before
-it can claim retained setup. A future release may evaluate migration to the
-data-protection Keychain.
+explicit caller ACL. Public preview builds are ad-hoc signed and do not provide
+a cross-version identity guarantee. A future Apple-signed stable release must
+separately qualify TCC and Keychain continuity before it can claim retained
+setup. A future release may evaluate migration to the data-protection Keychain.
 
 ## Authorization-dialog checks
 
@@ -152,17 +151,17 @@ macOS requires a one-time user decision for Accessibility. OsaGuard cannot and
 must not approve itself. The installed Tauri main process makes the native trust
 request, and the statically linked watcher operates in that same app process.
 
-Source and ordinary CI builds are ad-hoc signed and are not notarized. **Each
-local ad-hoc rebuild can have a new code identity from TCC's perspective**, even
-when its bundle identifier and path are unchanged. There is no public OsaGuard
-DMG, updater archive, or continuity claim across versions. A self-signed
-certificate, locally trusted identity, or Finder bypass must never be used as a
-replacement for Developer ID signing and notarization.
+Source, ordinary CI, and public preview builds are ad-hoc signed and are not
+notarized. **Each ad-hoc rebuild can have a new code identity from TCC's
+perspective**, even when its bundle identifier and path are unchanged. Preview
+releases therefore make no continuity claim across versions; their updater is
+disabled and updates are manual. A self-signed certificate or locally trusted
+identity is not a substitute for Developer ID signing and notarization.
 
-The source includes a Tauri updater implementation, but it remains in
-test-build/fail-closed mode until a future Apple-signed, notarized channel has
-passed full artifact and `N → N+1` continuity qualification. See
-[Releasing OsaGuard](RELEASING.md) for that hard gate.
+The source includes a Tauri updater implementation. It remains disabled for the
+current preview until a dedicated signed preview appcast and a real `N → N+1`
+continuity qualification exist. See [Releasing OsaGuard](RELEASING.md) for the
+preview and stable boundaries.
 
 ## Advanced exact-rule CLI (separate capability)
 

@@ -18,20 +18,27 @@ AppleScript and enter and submit a saved password.
 
 ## Distribution status
 
-OsaGuard's source is public, but **there is no public end-user app yet**. The
-project has no Apple Developer Program membership, Developer ID Application
-certificate, or Apple notarization ticket. Consequently, there is currently no
-official DMG, first public app release, stable updater channel, or supported
-installation route for ordinary users.
+OsaGuard is released as a **Preview** through [GitHub Releases](https://github.com/aiwaki/osaguard/releases).
+The first build, `v0.1.0-preview.1`, is for Apple Silicon and macOS 13+. It is
+a manual preview installation, not the stable channel.
 
-Do not install a DMG or an “OsaGuard release” obtained outside a future official
-project release page. A self-signed certificate, ad-hoc signing, adding a
-certificate to trust, or bypassing Gatekeeper through Finder do not replace
-Developer ID and notarization, and are not acceptable public-distribution paths.
+The project has no Apple Developer Program membership, Developer ID identity, or
+Apple notarization ticket. The preview is therefore ad-hoc signed, not notarized,
+and does not promise that Accessibility permission or Keychain access will carry
+across versions. The built-in updater is deliberately off for the first preview;
+download later previews manually from Releases.
 
-Until this changes, the project may be inspected, built, and tested only from
-source by developers. That is not a stability promise and does not promise that
-Accessibility permission or Keychain access will survive local rebuilds.
+### Installing the preview
+
+1. Open the newest [**Pre-release**](https://github.com/aiwaki/osaguard/releases).
+2. Download `OsaGuard_0.1.0_preview.1_aarch64.dmg` and move the app to
+   Applications.
+3. Run OsaGuard only from Applications. If macOS warns about the unnotarized
+   preview, do not disable Gatekeeper globally: use Finder's contextual **Open**
+   only for this exact preview if you trust it.
+
+Do not install OsaGuard files from outside the project release page. A preview
+does not promise stability or compatibility with future stable releases.
 
 ## Read this before running OsaGuard
 
@@ -95,7 +102,7 @@ remove the stale row, then request and enable access again.
 
 ## Setup and menu
 
-When a local development build is running, the app explains three one-time
+When a preview or local development build is running, the app explains three one-time
 steps:
 
 1. grant Accessibility to that exact build;
@@ -122,14 +129,14 @@ all other system languages.
 
 The source contains a Tauri updater implementation: it checks 15 seconds after
 launch and then every six hours, uses native notifications, and asks for an
-explicit installation confirmation. But **no public updater channel is
-configured and none may be published** until genuine Apple Developer ID and
-notarization qualification exists.
+explicit installation confirmation. The first public preview is **not connected
+to an updater channel**: GitHub's `latest` endpoint does not identify prereleases
+and would be an unreliable source.
 
-A local build reports that updates are unavailable in a test build. That is
-expected fail-closed behavior, not an error. Do not treat any key, endpoint, or
-DMG as official until this README and [the release procedure](docs/RELEASING.md)
-say otherwise.
+The preview therefore reports “Updates unavailable in this preview build.” This
+is expected fail-closed behavior. Install the next preview manually from
+Releases; a dedicated signed preview appcast will be added only after a real
+one-preview-to-the-next qualification.
 
 ## Privacy
 

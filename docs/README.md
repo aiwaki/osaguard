@@ -8,9 +8,9 @@ menu, update, uninstall, language, privacy, or security-warning behavior changes
 |---|---|
 | [Security design](SECURITY_DESIGN.md) | Trust boundaries, password handling, prompt recognition, and the unavoidable same-user risk. |
 | [Qualification](QUALIFICATION.md) | Evidence already collected and live gates that remain external. |
-| [Releasing](RELEASING.md) | Public-app release gate and the future Developer ID/notarization procedure. |
+| [Releasing](RELEASING.md) | Public preview procedure and the separately closed stable channel. |
 
-There is no public OsaGuard app release or updater channel today. Source builds
-remain ad-hoc signed; the binary-release workflows are intentionally fail-closed
-until Apple-issued Developer ID signing, notarization, and stapling can be
-properly qualified.
+OsaGuard has a manual Apple-Silicon preview channel. Preview builds are ad-hoc
+signed, are not notarized, and do not currently have automatic updates. The
+stable channel remains fail-closed until Developer ID signing, notarization, and
+stapling can be qualified.
