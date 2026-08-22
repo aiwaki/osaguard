@@ -35,6 +35,7 @@ const (
 	abiStateMissing      C.int32_t = 0
 	abiStatePaused       C.int32_t = 1
 	abiStateEnabled      C.int32_t = 2
+	abiStateReenrollment C.int32_t = 3
 	abiError             C.int32_t = -1
 	maxCallerErrorBuffer           = 4096
 )
@@ -88,15 +89,22 @@ func osaguard_password_exists(account *C.char, errBuf *C.char, errLen C.size_t) 
 		writeABIError(errBuf, errLen, err)
 		return abiError
 	}
-	exists, err := darwinbridge.KeychainExists(accountValue)
+	state, err := darwinbridge.KeychainStatus(accountValue)
 	if err != nil {
 		writeABIError(errBuf, errLen, err)
 		return abiError
 	}
-	if exists {
+	switch state {
+	case darwinbridge.KeychainItemReady:
 		return 1
+	case darwinbridge.KeychainItemNeedsReenrollment:
+		return 2
+	case darwinbridge.KeychainItemMissing:
+		return 0
+	default:
+		writeABIError(errBuf, errLen, errors.New("unknown Keychain item state"))
+		return abiError
 	}
-	return 0
 }
 
 //export osaguard_password_delete
@@ -149,12 +157,15 @@ func osaguard_watcher_run(account *C.char, controlFD C.int32_t, errBuf *C.char, 
 
 //export osaguard_integrity_state_get
 func osaguard_integrity_state_get(errBuf *C.char, errLen C.size_t) C.int32_t {
-	state, exists, err := darwinbridge.IntegrityStateLoad()
+	state, itemState, err := darwinbridge.IntegrityStateStatus()
 	if err != nil {
 		writeABIError(errBuf, errLen, err)
 		return abiError
 	}
-	if !exists {
+	if itemState == darwinbridge.KeychainItemNeedsReenrollment {
+		return abiStateReenrollment
+	}
+	if itemState == darwinbridge.KeychainItemMissing {
 		return abiStateMissing
 	}
 	switch state {

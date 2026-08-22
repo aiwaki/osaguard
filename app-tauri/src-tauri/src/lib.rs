@@ -166,6 +166,13 @@ impl Locale {
         }
     }
 
+    fn resave_password(self) -> &'static str {
+        match self {
+            Self::En => "Re-save administrator password…",
+            Self::Ru => "Сохранить пароль заново…",
+        }
+    }
+
     fn check_updates(self) -> &'static str {
         match self {
             Self::En => "Check for Updates…",
@@ -255,6 +262,8 @@ struct SetupStatus {
     installed: bool,
     accessibility_granted: bool,
     password_saved: bool,
+    password_state: KeychainItemState,
+    protected_state: KeychainItemState,
     risk_acknowledged: bool,
     configured: bool,
     enabled: bool,
@@ -380,6 +389,21 @@ enum ProtectedState {
     Enabled,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum KeychainItemState {
+    #[default]
+    Missing,
+    Ready,
+    NeedsReenrollment,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ProtectedStateInspection {
+    state: ProtectedState,
+    item_state: KeychainItemState,
+}
+
 fn native_error(buffer: &[libc::c_char; NATIVE_ERROR_CAPACITY], fallback: &str) -> String {
     let detail = unsafe {
         // SAFETY: every native bridge call receives this zero-initialized fixed buffer and
@@ -441,17 +465,26 @@ fn password_prompt_and_store(account: &str, locale: &str) -> Result<&'static str
     }
 }
 
-fn password_exists(account: &str) -> Result<bool, String> {
+fn decode_password_state(result: i32) -> Result<KeychainItemState, String> {
+    match result {
+        0 => Ok(KeychainItemState::Missing),
+        1 => Ok(KeychainItemState::Ready),
+        2 => Ok(KeychainItemState::NeedsReenrollment),
+        _ => Err("invalid password Keychain state".into()),
+    }
+}
+
+fn password_state(account: &str) -> Result<KeychainItemState, String> {
     let account = native_c_string(account, "account")?;
     let mut error = [0; NATIVE_ERROR_CAPACITY];
     let result = unsafe {
         // SAFETY: the C string and writable error buffer remain valid for the call.
         osaguard_password_exists(account.as_ptr(), error.as_mut_ptr(), error.len())
     };
-    match result {
-        0 => Ok(false),
-        1 => Ok(true),
-        _ => Err(native_error(&error, "inspect saved password")),
+    if result < 0 {
+        Err(native_error(&error, "inspect saved password"))
+    } else {
+        decode_password_state(result)
     }
 }
 
@@ -471,17 +504,49 @@ fn password_delete_all() -> Result<(), String> {
     }
 }
 
-fn protected_state() -> Result<ProtectedState, String> {
+fn decode_protected_state(result: i32) -> Result<ProtectedStateInspection, String> {
+    match result {
+        0 => Ok(ProtectedStateInspection {
+            state: ProtectedState::Missing,
+            item_state: KeychainItemState::Missing,
+        }),
+        1 => Ok(ProtectedStateInspection {
+            state: ProtectedState::Paused,
+            item_state: KeychainItemState::Ready,
+        }),
+        2 => Ok(ProtectedStateInspection {
+            state: ProtectedState::Enabled,
+            item_state: KeychainItemState::Ready,
+        }),
+        3 => Ok(ProtectedStateInspection {
+            // Never infer acknowledgement or enabled state from an item whose
+            // caller-only ACL belongs to a different application identity.
+            state: ProtectedState::Missing,
+            item_state: KeychainItemState::NeedsReenrollment,
+        }),
+        _ => Err("invalid protected Keychain state".into()),
+    }
+}
+
+fn protected_state_inspection() -> Result<ProtectedStateInspection, String> {
     let mut error = [0; NATIVE_ERROR_CAPACITY];
     let result = unsafe {
         // SAFETY: the writable error buffer remains valid for the call.
         osaguard_integrity_state_get(error.as_mut_ptr(), error.len())
     };
-    match result {
-        0 => Ok(ProtectedState::Missing),
-        1 => Ok(ProtectedState::Paused),
-        2 => Ok(ProtectedState::Enabled),
-        _ => Err(native_error(&error, "read protected OsaGuard state")),
+    if result < 0 {
+        Err(native_error(&error, "read protected OsaGuard state"))
+    } else {
+        decode_protected_state(result)
+    }
+}
+
+fn protected_state() -> Result<ProtectedState, String> {
+    let inspection = protected_state_inspection()?;
+    if inspection.item_state == KeychainItemState::NeedsReenrollment {
+        Err("protected OsaGuard state belongs to a different application identity".into())
+    } else {
+        Ok(inspection.state)
     }
 }
 
@@ -1101,21 +1166,32 @@ fn compute_status(app: &AppHandle) -> Result<SetupStatus, String> {
     let executable = current_executable()?;
     let installed = installed_application_path(&executable);
     let accessibility_granted = accessibility_trusted_from_app_process();
-    let (password_saved, risk_acknowledged, enabled, watcher_running) = if installed {
-        let user = current_user()?;
-        let password_saved = password_exists(&user.account)?;
-        let protected = protected_state()?;
-        (
-            password_saved,
-            protected != ProtectedState::Missing,
-            protected == ProtectedState::Enabled,
-            watcher_running(app)?,
-        )
-    } else {
-        // A copy launched from a DMG or a build directory must not inspect Keychain
-        // state or discover a watcher owned by the installed application.
-        (false, false, false, false)
-    };
+    let (password_state, protected_item_state, risk_acknowledged, enabled, watcher_running) =
+        if installed {
+            let user = current_user()?;
+            let password_state = password_state(&user.account)?;
+            let protected = protected_state_inspection()?;
+            (
+                password_state,
+                protected.item_state,
+                protected.item_state == KeychainItemState::Ready
+                    && protected.state != ProtectedState::Missing,
+                protected.item_state == KeychainItemState::Ready
+                    && protected.state == ProtectedState::Enabled,
+                watcher_running(app)?,
+            )
+        } else {
+            // A copy launched from a DMG or a build directory must not inspect Keychain
+            // state or discover a watcher owned by the installed application.
+            (
+                KeychainItemState::Missing,
+                KeychainItemState::Missing,
+                false,
+                false,
+                false,
+            )
+        };
+    let password_saved = password_state == KeychainItemState::Ready;
     let configured = installed && accessibility_granted && password_saved && risk_acknowledged;
     let update_status = current_update_status(app);
     Ok(SetupStatus {
@@ -1124,6 +1200,8 @@ fn compute_status(app: &AppHandle) -> Result<SetupStatus, String> {
         installed,
         accessibility_granted,
         password_saved,
+        password_state,
+        protected_state: protected_item_state,
         risk_acknowledged,
         configured,
         enabled,
@@ -1178,18 +1256,18 @@ fn refresh_menu(app: &AppHandle) {
         locale.resume()
     });
     let _ = handles.toggle.set_enabled(configured);
-    let password_saved = status
-        .as_ref()
-        .map(|status| status.password_saved)
-        .unwrap_or(false);
     let password_enabled = status
         .as_ref()
         .map(|status| status.installed && status.accessibility_granted)
         .unwrap_or(false);
-    let _ = handles.password.set_text(if password_saved {
-        locale.change_password()
-    } else {
-        locale.save_password()
+    let password_state = status
+        .as_ref()
+        .map(|status| status.password_state)
+        .unwrap_or(KeychainItemState::Missing);
+    let _ = handles.password.set_text(match password_state {
+        KeychainItemState::Ready => locale.change_password(),
+        KeychainItemState::NeedsReenrollment => locale.resave_password(),
+        KeychainItemState::Missing => locale.save_password(),
     });
     let _ = handles.password.set_enabled(password_enabled);
 
@@ -1381,7 +1459,10 @@ fn enable_automatic(app: AppHandle, acknowledgement: String) -> Result<SetupStat
     if acknowledgement != ACKNOWLEDGEMENT {
         return Err("automatic mode was not explicitly acknowledged".into());
     }
-    if protected_state()? == ProtectedState::Missing {
+    let protected = protected_state_inspection()?;
+    if protected.item_state != KeychainItemState::Ready
+        || protected.state == ProtectedState::Missing
+    {
         set_protected_state(ProtectedState::Paused)?;
     }
     set_enabled_inner(&app, true)
@@ -1425,30 +1506,31 @@ fn verify_bundle(path: &Path) -> Result<(), String> {
     }
 }
 
-fn designated_requirement(path: &Path) -> Result<String, String> {
-    let output = Command::new("/usr/bin/codesign")
-        .args(["--display", "--requirements", "-"])
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| format!("read application signing requirement: {error}"))?;
-    if !output.status.success() {
-        return Err(output_error(
-            "read application signing requirement",
-            &output,
-        ));
-    }
-    let detail = String::from_utf8(output.stderr)
-        .map_err(|_| "application signing requirement is not valid UTF-8")?;
-    detail
-        .lines()
-        .find_map(|line| {
-            let offset = line.find("designated =>")?;
-            Some(line[offset..].trim().to_owned())
+fn parse_bundle_version(value: &str) -> Result<[u64; 3], String> {
+    let parts = value
+        .split('.')
+        .map(|part| {
+            if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("application version must contain three numeric components".into());
+            }
+            part.parse::<u64>()
+                .map_err(|_| "application version component is too large".to_owned())
         })
-        .ok_or_else(|| "application has no designated signing requirement".into())
+        .collect::<Result<Vec<_>, String>>()?;
+    parts
+        .try_into()
+        .map_err(|_| "application version must contain three numeric components".into())
+}
+
+fn bundle_version(path: &Path) -> Result<[u64; 3], String> {
+    let info = Value::from_file(path.join("Contents/Info.plist"))
+        .map_err(|error| format!("read application Info.plist: {error}"))?;
+    let version = info
+        .as_dictionary()
+        .and_then(|dictionary| dictionary.get("CFBundleShortVersionString"))
+        .and_then(Value::as_string)
+        .ok_or("application bundle has no short version")?;
+    parse_bundle_version(version)
 }
 
 fn open_application(path: &Path) -> Result<(), String> {
@@ -1463,6 +1545,20 @@ fn open_application(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("open installed application: {error}"))
 }
 
+#[cfg(target_os = "macos")]
+fn move_replaced_bundle_to_trash(path: &Path) -> Result<(), String> {
+    let mut context = TrashContext::new();
+    context.set_delete_method(DeleteMethod::NsFileManager);
+    context
+        .delete(path)
+        .map_err(|error| format!("move replaced OsaGuard to Trash: {error}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn move_replaced_bundle_to_trash(_path: &Path) -> Result<(), String> {
+    Err("application replacement is only available on macOS".into())
+}
+
 fn install_application_bundle() -> Result<InstallResult, String> {
     let executable = current_executable()?;
     if installed_application_path(&executable) {
@@ -1473,21 +1569,20 @@ fn install_application_bundle() -> Result<InstallResult, String> {
     let source = app_bundle_path(&executable)
         .ok_or("installation is available only from a packaged OsaGuard.app")?;
     verify_bundle(&source)?;
-    let source_requirement = designated_requirement(&source)?;
+    let source_version = bundle_version(&source)?;
     let destination = Path::new(INSTALLED_APP);
-    if destination.exists() {
+    let replacing = if destination.exists() {
         verify_bundle(destination)?;
-        if designated_requirement(destination)? != source_requirement {
-            return Err(
-                "an OsaGuard app signed by a different identity already exists in Applications"
-                    .into(),
-            );
+        if source_version <= bundle_version(destination)? {
+            open_application(destination)?;
+            return Ok(InstallResult {
+                outcome: "opened_existing".into(),
+            });
         }
-        open_application(destination)?;
-        return Ok(InstallResult {
-            outcome: "opened_existing".into(),
-        });
-    }
+        true
+    } else {
+        false
+    };
     let temporary = PathBuf::from(format!(
         "/Applications/.OsaGuard-installing-{}.app",
         std::process::id()
@@ -1512,6 +1607,50 @@ fn install_application_bundle() -> Result<InstallResult, String> {
         let _ = fs::remove_dir_all(&temporary);
         return Err(error);
     }
+    if replacing {
+        let backup = PathBuf::from(format!(
+            "/Applications/.OsaGuard-replaced-{}.app",
+            std::process::id()
+        ));
+        if backup.exists() {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err("a previous OsaGuard replacement is still in progress".into());
+        }
+        if let Err(error) = fs::rename(destination, &backup) {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(format!("stage installed OsaGuard for replacement: {error}"));
+        }
+        if let Err(error) = fs::rename(&temporary, destination) {
+            let restore = fs::rename(&backup, destination);
+            let _ = fs::remove_dir_all(&temporary);
+            return match restore {
+                Ok(()) => Err(format!("finish OsaGuard replacement: {error}")),
+                Err(restore_error) => Err(format!(
+                    "finish OsaGuard replacement: {error}; restore previous OsaGuard: {restore_error}"
+                )),
+            };
+        }
+        if let Err(error) = open_application(destination) {
+            let displaced = fs::rename(destination, &temporary);
+            let restored = fs::rename(&backup, destination);
+            let _ = fs::remove_dir_all(&temporary);
+            return match (displaced, restored) {
+                (Ok(()), Ok(())) => Err(error),
+                (displaced, restored) => Err(format!(
+                    "{error}; replacement rollback failed (new: {displaced:?}, previous: {restored:?})"
+                )),
+            };
+        }
+        if let Err(error) = move_replaced_bundle_to_trash(&backup) {
+            eprintln!(
+                "OsaGuard replacement succeeded but its recoverable backup remains at {}: {error}",
+                backup.display()
+            );
+        }
+        return Ok(InstallResult {
+            outcome: "updated".into(),
+        });
+    }
     if let Err(error) = fs::rename(&temporary, destination) {
         let _ = fs::remove_dir_all(&temporary);
         return Err(format!("finish OsaGuard installation: {error}"));
@@ -1528,7 +1667,10 @@ async fn install_app(app: AppHandle) -> Result<InstallResult, String> {
     let result = task
         .await
         .map_err(|error| format!("installation task failed: {error}"))??;
-    if result.outcome == "installed" || result.outcome == "opened_existing" {
+    if matches!(
+        result.outcome.as_str(),
+        "installed" | "updated" | "opened_existing"
+    ) {
         let app = app.clone();
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(900));
@@ -2390,10 +2532,11 @@ mod tests {
     };
 
     use super::{
-        app_bundle_path, decode_accessibility_request_result, installed_application_path,
-        native_c_string, update_ready_with_error, validate_update_install_request,
-        LifecycleCoordinator, LifecycleOperation, LifecyclePhase, OperationGate, UpdatePhase,
-        UpdateStatus, WatcherProcess, INSTALL_UPDATE_CONFIRMATION,
+        app_bundle_path, decode_accessibility_request_result, decode_password_state,
+        decode_protected_state, installed_application_path, native_c_string, parse_bundle_version,
+        update_ready_with_error, validate_update_install_request, KeychainItemState,
+        LifecycleCoordinator, LifecycleOperation, LifecyclePhase, OperationGate, ProtectedState,
+        UpdatePhase, UpdateStatus, WatcherProcess, INSTALL_UPDATE_CONFIRMATION,
     };
 
     #[test]
@@ -2407,6 +2550,26 @@ mod tests {
     fn rejects_nul_in_native_bridge_strings() {
         assert!(native_c_string("normal", "value").is_ok());
         assert!(native_c_string("bad\0value", "value").is_err());
+    }
+
+    #[test]
+    fn decodes_keychain_reenrollment_without_trusting_the_old_item() {
+        assert_eq!(decode_password_state(0), Ok(KeychainItemState::Missing));
+        assert_eq!(decode_password_state(1), Ok(KeychainItemState::Ready));
+        assert_eq!(
+            decode_password_state(2),
+            Ok(KeychainItemState::NeedsReenrollment)
+        );
+        assert!(decode_password_state(-1).is_err());
+
+        let protected = decode_protected_state(3).expect("decode protected state");
+        assert_eq!(protected.state, ProtectedState::Missing);
+        assert_eq!(protected.item_state, KeychainItemState::NeedsReenrollment);
+        assert_eq!(
+            serde_json::to_value(KeychainItemState::NeedsReenrollment)
+                .expect("serialize Keychain item state"),
+            serde_json::json!("needs_reenrollment")
+        );
     }
 
     #[test]
@@ -2513,6 +2676,16 @@ mod tests {
             app_bundle_path(Path::new("/tmp/OsaGuard.app/not-a-macos-binary")),
             None
         );
+    }
+
+    #[test]
+    fn compares_strict_three_component_bundle_versions() {
+        assert_eq!(parse_bundle_version("0.1.1"), Ok([0, 1, 1]));
+        assert!(parse_bundle_version("0.1").is_err());
+        assert!(parse_bundle_version("0.1.1-preview.1").is_err());
+        assert!(parse_bundle_version("0.01.1").is_ok());
+        assert!(parse_bundle_version("0.1.1.0").is_err());
+        assert!([0, 1, 1] > [0, 1, 0]);
     }
 
     #[test]

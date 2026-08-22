@@ -10,6 +10,20 @@ const UPDATE_PHASES = new Set([
   "error",
 ]);
 
+const KEYCHAIN_ITEM_STATES = new Set([
+  "missing",
+  "ready",
+  "needs_reenrollment",
+]);
+
+export function normalizeKeychainItemState(value, readyFallback = false) {
+  return KEYCHAIN_ITEM_STATES.has(value)
+    ? value
+    : readyFallback
+      ? "ready"
+      : "missing";
+}
+
 export function normalizeUpdateStatus(value) {
   const configured = value?.configured === true;
   const requestedPhase = typeof value?.phase === "string" ? value.phase : "";

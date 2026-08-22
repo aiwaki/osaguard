@@ -5,6 +5,15 @@ package darwinbridge
 import "errors"
 
 var ErrPasswordPromptCanceled = errors.New("password entry canceled")
+var ErrKeychainItemNeedsReenrollment = errors.New("keychain item belongs to a different application identity")
+
+type KeychainItemState string
+
+const (
+	KeychainItemMissing           KeychainItemState = "missing"
+	KeychainItemReady             KeychainItemState = "ready"
+	KeychainItemNeedsReenrollment KeychainItemState = "needs_reenrollment"
+)
 
 type IntegrityState string
 
@@ -47,15 +56,19 @@ type ProcessInfo struct {
 	Arguments            []string
 }
 
-func ReadAuthSnapshot() (AuthSnapshot, error)  { return AuthSnapshot{}, unsupported() }
-func KeychainStore(string, []byte) error       { return unsupported() }
-func KeychainLoad(string) ([]byte, error)      { return nil, unsupported() }
-func KeychainExists(string) (bool, error)      { return false, unsupported() }
-func KeychainDelete(string) error              { return unsupported() }
-func KeychainDeleteAll() error                 { return unsupported() }
-func IntegrityStateStore(IntegrityState) error { return unsupported() }
+func ReadAuthSnapshot() (AuthSnapshot, error)          { return AuthSnapshot{}, unsupported() }
+func KeychainStore(string, []byte) error               { return unsupported() }
+func KeychainLoad(string) ([]byte, error)              { return nil, unsupported() }
+func KeychainStatus(string) (KeychainItemState, error) { return "", unsupported() }
+func KeychainExists(string) (bool, error)              { return false, unsupported() }
+func KeychainDelete(string) error                      { return unsupported() }
+func KeychainDeleteAll() error                         { return unsupported() }
+func IntegrityStateStore(IntegrityState) error         { return unsupported() }
 func IntegrityStateLoad() (IntegrityState, bool, error) {
 	return "", false, unsupported()
+}
+func IntegrityStateStatus() (IntegrityState, KeychainItemState, error) {
+	return "", "", unsupported()
 }
 func IntegrityStateDelete() error { return unsupported() }
 func IntegrityStateACLTrustsPathForTesting(string) (bool, error) {

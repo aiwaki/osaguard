@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Require a main dispatch and the first preview sequence
+      - name: Require a main dispatch and the authorized preview sequence
         env:
           PREVIEW: ${{ inputs.preview }}
         shell: bash
@@ -57,15 +57,18 @@ jobs:
 
       - name: Resolve exact preview identity
         id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW: ${{ inputs.preview }}
         shell: bash
         run: |
           set -euo pipefail
           version=$(node -p "require('./app-tauri/package.json').version")
-          [[ "$version" == 0.1.0 ]] || {
-            echo "Preview 1 must package OsaGuard 0.1.0; found $version" >&2
+          [[ "$version" == 0.1.1 ]] || {
+            echo "Preview ${PREVIEW} must package OsaGuard 0.1.1; found $version" >&2
             exit 1
           }
-          tag="v${version}-preview.1"
+          tag="v${version}-preview.${PREVIEW}"
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
           existing_tag=$(gh api \
             "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/$tag" \
@@ -79,12 +82,10 @@ jobs:
           }
           {
             echo "version=$version"
+            echo "preview=$PREVIEW"
             echo "tag=$tag"
             echo "commit=$GITHUB_SHA"
           } >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ github.token }}
-
       - name: Require a successful exact-main CI run
         env:
           GH_TOKEN: ${{ github.token }}
@@ -175,7 +176,7 @@ jobs:
 
           release_dir=release-assets
           /bin/mkdir "$release_dir"
-          asset_prefix="OsaGuard_${{ steps.release.outputs.version }}_preview.1_aarch64"
+          asset_prefix="OsaGuard_${{ steps.release.outputs.version }}_preview.${{ steps.release.outputs.preview }}_aarch64"
           /bin/cp "${disk_images[0]}" "$release_dir/${asset_prefix}.dmg"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
             "$app_bundle" "$release_dir/${asset_prefix}.zip"
@@ -193,6 +194,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RELEASE_PREVIEW: ${{ steps.release.outputs.preview }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         shell: bash
@@ -201,13 +203,14 @@ jobs:
           umask 077
           notes="$RUNNER_TEMP/osaguard-preview-notes.md"
           {
-            printf '%s\n\n' "OsaGuard ${RELEASE_VERSION} — Preview 1"
+            printf '%s\n\n' "OsaGuard ${RELEASE_VERSION} — Preview ${RELEASE_PREVIEW}"
             printf '%s\n\n' 'Предварительная сборка для Apple Silicon. Это не stable-канал и не нотариально заверенная Apple сборка.'
             printf '%s\n\n' 'Preview build for Apple Silicon. This is not the stable channel and is not notarized by Apple.'
+            printf '%s\n\n' 'Исправляет зависание Preview 1 на экране загрузки. Replaces Preview 1 and fixes the dashboard loading-screen hang.'
             printf '%s\n' '## Установка / Installation'
-            printf '%s\n' "- Скачайте \`OsaGuard_${RELEASE_VERSION}_preview.1_aarch64.dmg\`, перенесите OsaGuard в «Программы» и запускайте только из этой папки. / Download \`OsaGuard_${RELEASE_VERSION}_preview.1_aarch64.dmg\`, move OsaGuard to Applications, and run it only from there."
-            printf '%s\n' '- macOS может предупредить, что приложение не нотариально. Не отключайте Gatekeeper глобально; используйте только контекстное меню Finder → «Открыть», если доверяете этому exact preview. / macOS may warn because the app is not notarized. Do not disable Gatekeeper globally; use Finder’s contextual Open only if you trust this exact preview.'
-            printf '%s\n' '- Обновления этой первой preview устанавливаются вручную: встроенный updater намеренно не настроен на GitHub Latest. / Updates for this first preview are manual: the built-in updater is intentionally not pointed at GitHub Latest.'
+            printf '%s\n' "- Скачайте \`OsaGuard_${RELEASE_VERSION}_preview.${RELEASE_PREVIEW}_aarch64.dmg\`, перенесите OsaGuard в «Программы» и запускайте только из этой папки. / Download \`OsaGuard_${RELEASE_VERSION}_preview.${RELEASE_PREVIEW}_aarch64.dmg\`, move OsaGuard to Applications, and run it only from there."
+            printf '%s\n' '- macOS может предупредить, что приложение не нотариально. Не отключайте Gatekeeper глобально; используйте только контекстное меню Finder → «Открыть», если доверяете этому exact preview. / macOS may warn because the app is not notarized. Do not disable Gatekeeper globally; use the Finder contextual Open command only if you trust this exact preview.'
+            printf '%s\n' '- Обновления preview устанавливаются вручную: встроенный updater намеренно не настроен на GitHub Latest. / Preview updates are manual: the built-in updater is intentionally not pointed at GitHub Latest.'
             printf '%s\n\n' '## Критическое предупреждение / Critical warning'
             printf '%s\n\n' 'После настройки OsaGuard может автоматически отправить пароль администратора в подходящее окно AppleScript. Код, уже запущенный от вашего пользователя, может этим получить root без нового ручного подтверждения. After setup, OsaGuard can automatically submit an administrator password to a matching AppleScript dialog. Code already running as your user can thereby obtain root without a new manual confirmation.'
             printf '%s\n' "Source commit: ${RELEASE_COMMIT}"
@@ -216,7 +219,7 @@ jobs:
           release_id=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
             -f tag_name="$RELEASE_TAG" \
             -f target_commitish="$RELEASE_COMMIT" \
-            -f name="OsaGuard ${RELEASE_VERSION} (Preview 1)" \
+            -f name="OsaGuard ${RELEASE_VERSION} (Preview ${RELEASE_PREVIEW})" \
             -f body="$(< "$notes")" \
             -F draft=true \
             -F prerelease=true \
@@ -245,8 +248,8 @@ jobs:
           [[ "$(gh api "$api" --jq '.draft')" == true ]]
           [[ "$(gh api "$api" --jq '.prerelease')" == true ]]
           expected_assets=$(printf '%s\n' \
-            "OsaGuard_${RELEASE_VERSION}_preview.1_aarch64.dmg" \
-            "OsaGuard_${RELEASE_VERSION}_preview.1_aarch64.zip" \
+            "OsaGuard_${RELEASE_VERSION}_preview.${RELEASE_PREVIEW}_aarch64.dmg" \
+            "OsaGuard_${RELEASE_VERSION}_preview.${RELEASE_PREVIEW}_aarch64.zip" \
             SHA256SUMS | LC_ALL=C sort)
           actual_assets=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" \

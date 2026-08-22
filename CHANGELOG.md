@@ -6,6 +6,20 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1-preview.1] - 2026-08-23
+
+### Fixed
+
+- packaged dashboard startup now grants only the Tauri event permissions it
+  uses and no longer remains on the loading screen when initialization fails.
+- startup failures now render a visible recovery action instead of leaving a
+  permanent spinner.
+
+### Security
+
+- the corrected preview remains an Apple-Silicon-only, ad-hoc, unnotarized
+  prerelease with manual updates; the stable channel remains closed.
+
 ## [0.1.0-preview.1] - 2026-08-22
 
 ### Added
@@ -52,5 +66,6 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   can access it; previews use GitHub-hosted ad-hoc bundles only.
 
 [Unreleased]: https://github.com/aiwaki/osaguard/commits/main
+[0.1.1-preview.1]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.1-preview.1
 [0.1.0-preview.1]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.0-preview.1
 [0.1.0]: https://github.com/aiwaki/osaguard/tree/main

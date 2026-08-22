@@ -42,6 +42,13 @@ test("stable binary release remains closed while hosted ad-hoc preview publicati
   assert.match(previewWorkflow, /make_latest=false/);
   assert.match(previewWorkflow, /npm run build:local/);
   assert.match(previewWorkflow, /actions\/attest@[0-9a-f]{40}/);
+  assert.match(previewWorkflow, /default: "1"/);
+  assert.match(previewWorkflow, /\[\[ "\$PREVIEW" == 1 \]\]/);
+  assert.match(previewWorkflow, /\[\[ "\$version" == 0\.1\.1 \]\]/);
+  assert.match(previewWorkflow, /echo "preview=\$PREVIEW"/);
+  assert.match(previewWorkflow, /tag="v\$\{version\}-preview\.\$\{PREVIEW\}"/);
+  assert.match(previewWorkflow, /preview\.\$\{RELEASE_PREVIEW\}_aarch64/);
+  assert.doesNotMatch(previewWorkflow, /preview\.1_aarch64|\(Preview 1\)/);
   assert.doesNotMatch(previewWorkflow, /\bsecrets\./);
   assert.doesNotMatch(previewWorkflow, /\bsecurity\b|\bnotary\b/i);
 });

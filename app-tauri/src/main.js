@@ -1,5 +1,6 @@
 import {
   bootstrapRuntime,
+  normalizeKeychainItemState,
   normalizeUpdateStatus,
   passwordOutcome,
   updateActionInProgress,
@@ -44,9 +45,14 @@ const copy = {
     passwordCopy:
       "Opens a native protected field. The password is stored only in Keychain on this Mac; it is never shown, copied, logged or sent.",
     passwordButton: "Enter password once",
+    passwordReenrollmentCopy:
+      "This preview has a different local signing identity, so macOS will not let it use the earlier Keychain item. Enter the password again to replace that value with caller-only access for this copy.",
+    passwordReenrollmentButton: "Re-save password",
     automaticTitle: "Confirm automatic mode",
     automaticCopy:
       "Review the serious security trade-off before enabling automatic confirmation. Once enabled, it works without later clicks.",
+    automaticReenrollmentCopy:
+      "macOS tied the earlier automatic-mode confirmation to a previous preview. Review the warning and enable it again; automatic confirmation stays off until then.",
     automaticButton: "Review security warning",
     riskTitle: "This is passwordless administrator access",
     riskBody:
@@ -176,9 +182,14 @@ const copy = {
     passwordCopy:
       "Откроется нативное защищённое поле. Пароль хранится только в Связке ключей на этом Mac; он не показывается, не копируется, не попадает в логи и никуда не отправляется.",
     passwordButton: "Один раз ввести пароль",
+    passwordReenrollmentCopy:
+      "У этой preview-сборки другая локальная подпись, поэтому macOS не даёт ей использовать прежний объект Связки ключей. Введите пароль ещё раз: OsaGuard заменит значение и ограничит доступ текущим приложением.",
+    passwordReenrollmentButton: "Сохранить пароль заново",
     automaticTitle: "Подтвердите автоматический режим",
     automaticCopy:
       "Перед включением автоподтверждения прочитайте важное предупреждение о безопасности. После включения дополнительные нажатия не понадобятся.",
+    automaticReenrollmentCopy:
+      "macOS привязала прежнее подтверждение автоматического режима к предыдущей preview-сборке. Прочитайте предупреждение и включите режим снова; до этого автоподтверждение останется выключенным.",
     automaticButton: "Прочитать предупреждение",
     riskTitle: "Это беспарольный доступ администратора",
     riskBody:
@@ -370,7 +381,14 @@ function renderInstall() {
 
 function renderSetup() {
   const access = status.accessibilityGranted;
-  const password = status.passwordSaved;
+  const passwordState = normalizeKeychainItemState(
+    status.passwordState,
+    status.passwordSaved,
+  );
+  const protectedState = normalizeKeychainItemState(status.protectedState);
+  const passwordNeedsReenrollment = passwordState === "needs_reenrollment";
+  const protectedNeedsReenrollment = protectedState === "needs_reenrollment";
+  const password = passwordState === "ready";
   const automatic = status.automaticActive;
   const done = [access, password, automatic].filter(Boolean).length;
   app.innerHTML = `
@@ -400,16 +418,20 @@ function renderSetup() {
         ${stepCard({
           number: 2,
           title: t.passwordTitle,
-          body: t.passwordCopy,
+          body: passwordNeedsReenrollment ? t.passwordReenrollmentCopy : t.passwordCopy,
           complete: password,
           locked: !access,
           action: "password",
-          label: t.passwordButton,
+          label: passwordNeedsReenrollment
+            ? t.passwordReenrollmentButton
+            : t.passwordButton,
         })}
         ${stepCard({
           number: 3,
           title: t.automaticTitle,
-          body: t.automaticCopy,
+          body: protectedNeedsReenrollment
+            ? t.automaticReenrollmentCopy
+            : t.automaticCopy,
           complete: automatic,
           locked: !access || !password,
           dangerous: true,

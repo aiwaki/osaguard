@@ -3,11 +3,23 @@ import test from "node:test";
 
 import {
   bootstrapRuntime,
+  normalizeKeychainItemState,
   normalizeUpdateStatus,
   passwordOutcome,
   updateActionInProgress,
   updateIsInstallable,
 } from "../src/ui-state.mjs";
+
+test("Keychain item states preserve re-enrollment without trusting unknown values", () => {
+  assert.equal(normalizeKeychainItemState("missing"), "missing");
+  assert.equal(normalizeKeychainItemState("ready"), "ready");
+  assert.equal(
+    normalizeKeychainItemState("needs_reenrollment"),
+    "needs_reenrollment",
+  );
+  assert.equal(normalizeKeychainItemState("unexpected", true), "ready");
+  assert.equal(normalizeKeychainItemState("unexpected", false), "missing");
+});
 
 test("bootstrap loads status before subscribing and reports success", async () => {
   const calls = [];

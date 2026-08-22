@@ -52,6 +52,41 @@ func TestLegacyKeychainIntegrationOptInIsRejected(t *testing.T) {
 	}
 }
 
+func TestDecodeKeychainItemStatePreservesReenrollmentBoundary(t *testing.T) {
+	tests := []struct {
+		result int32
+		state  KeychainItemState
+		valid  bool
+	}{
+		{result: 0, state: KeychainItemMissing, valid: true},
+		{result: 1, state: KeychainItemReady, valid: true},
+		{result: 2, state: KeychainItemNeedsReenrollment, valid: true},
+		{result: -1, valid: false},
+		{result: 3, valid: false},
+	}
+	for _, test := range tests {
+		state, valid := decodeKeychainItemState(test.result)
+		if state != test.state || valid != test.valid {
+			t.Fatalf("decodeKeychainItemState(%d) = (%q, %t), want (%q, %t)", test.result, state, valid, test.state, test.valid)
+		}
+	}
+}
+
+func TestKeychainInspectionDoesNotCollapseACLMismatchIntoFailure(t *testing.T) {
+	source, err := os.ReadFile("bridge_darwin.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"if (caller_only == 0) return 2;",
+		"return access_state == 0 ? 2 : -1;",
+	} {
+		if !strings.Contains(string(source), required) {
+			t.Fatalf("Keychain state inspection is missing typed ACL-mismatch mapping %q", required)
+		}
+	}
+}
+
 func TestDeleteAllUsesVerifiedKeychainItemReferences(t *testing.T) {
 	// This is a source-boundary regression test, not a live Keychain test. The
 	// production function must enumerate the dedicated service, prove every

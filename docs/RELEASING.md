@@ -6,7 +6,7 @@ OsaGuard may be published as an explicitly labelled **GitHub prerelease** withou
 an Apple Developer membership. This matches the project's Slipstream preview
 model, not a stable macOS distribution channel.
 
-The current first preview is `v0.1.0-preview.1`:
+The current preview is `v0.1.1-preview.1`:
 
 - Apple Silicon and macOS 13+ only;
 - built on a disposable GitHub-hosted `macos-14` runner;
@@ -27,10 +27,13 @@ preview, not a general trust workaround.
 
 ### Preview publication procedure
 
-1. Update the README files, changelog, security notes, and preview sequence.
+1. Update the README files, changelog, security notes, and authorized preview
+   sequence. Every correction uses a new sequence; published assets are never
+   replaced.
 2. Push `main`; wait for the exact successful `ci.yml` run.
-3. Manually dispatch **Publish macOS preview** from `main`. It must reject every
-   other ref and an absent or mismatched CI result.
+3. Manually dispatch **Publish macOS preview** from `main` with the exact
+   authorized sequence (`1` for the current source). It must reject every other
+   sequence or ref and an absent or mismatched CI result.
 4. The GitHub-hosted runner builds the same immutable source, creates a draft,
    uploads exactly the DMG, ZIP, and checksum manifest, validates their names
    and the release commit, attests the artifacts, and publishes that exact draft

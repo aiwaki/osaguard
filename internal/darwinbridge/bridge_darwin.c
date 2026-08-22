@@ -784,7 +784,13 @@ int og_keychain_exists(const char *account, char *err, size_t err_len) {
         CFDictionaryRemoveValue(query, kSecMatchLimit);
         int caller_only = og_query_item_has_caller_only_access(query, err, err_len);
         CFRelease(query);
-        return caller_only == 1 ? 1 : -1;
+        // A metadata match with a different trusted-application ACL is not a
+        // transport failure. Report it separately so a newly signed/ad-hoc
+        // application can stay fail-closed and ask the user to re-enrol the
+        // password instead of making the whole dashboard fail to start.
+        if (caller_only == 1) return 1;
+        if (caller_only == 0) return 2;
+        return -1;
     }
     CFRelease(query);
     if (status == errSecItemNotFound) return 0;
@@ -910,9 +916,13 @@ int og_integrity_state_load(unsigned char **state, size_t *state_len, char *err,
         og_set_osstatus_error(err, err_len, "query protected product state", existence_status);
         return -1;
     }
-    if (og_query_item_has_caller_only_access(query, err, err_len) != 1) {
+    int access_state = og_query_item_has_caller_only_access(query, err, err_len);
+    if (access_state != 1) {
         CFRelease(query);
-        return -1;
+        // Keep the protected state unread and distinguish an old/foreign ACL
+        // from an actual Keychain failure. Callers must never treat 2 as an
+        // acknowledged or enabled state.
+        return access_state == 0 ? 2 : -1;
     }
     CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue);
     CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);

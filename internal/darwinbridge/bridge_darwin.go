@@ -77,6 +77,15 @@ import (
 const maxOsaScriptProcesses = 64
 
 var ErrPasswordPromptCanceled = errors.New("password entry canceled")
+var ErrKeychainItemNeedsReenrollment = errors.New("keychain item belongs to a different application identity")
+
+type KeychainItemState string
+
+const (
+	KeychainItemMissing           KeychainItemState = "missing"
+	KeychainItemReady             KeychainItemState = "ready"
+	KeychainItemNeedsReenrollment KeychainItemState = "needs_reenrollment"
+)
 
 type IntegrityState string
 
@@ -194,22 +203,42 @@ func KeychainLoad(account string) ([]byte, error) {
 	return C.GoBytes(unsafe.Pointer(secret), C.int(secretLen)), nil
 }
 
-func KeychainExists(account string) (bool, error) {
+func decodeKeychainItemState(result int32) (KeychainItemState, bool) {
+	switch result {
+	case 0:
+		return KeychainItemMissing, true
+	case 1:
+		return KeychainItemReady, true
+	case 2:
+		return KeychainItemNeedsReenrollment, true
+	default:
+		return "", false
+	}
+}
+
+func KeychainStatus(account string) (KeychainItemState, error) {
 	if account == "" {
-		return false, errors.New("account must not be empty")
+		return "", errors.New("account must not be empty")
 	}
 	accountC := C.CString(account)
 	defer C.free(unsafe.Pointer(accountC))
 	var errBuf [512]C.char
 	result := C.og_keychain_exists(accountC, &errBuf[0], C.size_t(len(errBuf)))
-	switch result {
-	case 1:
-		return true, nil
-	case 0:
-		return false, nil
-	default:
-		return false, bridgeError(errBuf[:])
+	if state, ok := decodeKeychainItemState(int32(result)); ok {
+		return state, nil
 	}
+	return "", bridgeError(errBuf[:])
+}
+
+func KeychainExists(account string) (bool, error) {
+	state, err := KeychainStatus(account)
+	if err != nil {
+		return false, err
+	}
+	if state == KeychainItemNeedsReenrollment {
+		return false, ErrKeychainItemNeedsReenrollment
+	}
+	return state == KeychainItemReady, nil
 }
 
 func KeychainDelete(account string) error {
@@ -256,29 +285,43 @@ func IntegrityStateStore(state IntegrityState) error {
 	return nil
 }
 
-func IntegrityStateLoad() (IntegrityState, bool, error) {
+func IntegrityStateStatus() (IntegrityState, KeychainItemState, error) {
 	var value *C.uchar
 	var valueLen C.size_t
 	var errBuf [512]C.char
 	result := C.og_integrity_state_load(&value, &valueLen, &errBuf[0], C.size_t(len(errBuf)))
 	if result == 0 {
-		return "", false, nil
+		return "", KeychainItemMissing, nil
+	}
+	if result == 2 {
+		return "", KeychainItemNeedsReenrollment, nil
 	}
 	if result != 1 {
-		return "", false, bridgeError(errBuf[:])
+		return "", "", bridgeError(errBuf[:])
 	}
 	if value == nil || valueLen == 0 || valueLen > 64 {
 		if value != nil {
 			C.og_secure_free(unsafe.Pointer(value), valueLen)
 		}
-		return "", false, errors.New("protected product state has invalid length")
+		return "", "", errors.New("protected product state has invalid length")
 	}
 	defer C.og_secure_free(unsafe.Pointer(value), valueLen)
 	state := IntegrityState(C.GoStringN((*C.char)(unsafe.Pointer(value)), C.int(valueLen)))
 	if state != IntegrityStatePaused && state != IntegrityStateEnabled {
-		return "", false, errors.New("protected product state has invalid value")
+		return "", "", errors.New("protected product state has invalid value")
 	}
-	return state, true, nil
+	return state, KeychainItemReady, nil
+}
+
+func IntegrityStateLoad() (IntegrityState, bool, error) {
+	state, itemState, err := IntegrityStateStatus()
+	if err != nil {
+		return "", false, err
+	}
+	if itemState == KeychainItemNeedsReenrollment {
+		return "", false, ErrKeychainItemNeedsReenrollment
+	}
+	return state, itemState == KeychainItemReady, nil
 }
 
 func IntegrityStateDelete() error {
