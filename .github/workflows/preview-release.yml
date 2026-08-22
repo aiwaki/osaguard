@@ -271,9 +271,8 @@ jobs:
             2> "$RUNNER_TEMP/osaguard-designated-requirement.txt"
           /usr/bin/grep -F 'identifier "dev.aiwaki.osaguard"' \
             "$RUNNER_TEMP/osaguard-designated-requirement.txt"
-          /usr/bin/tr '[:upper:]' '[:lower:]' \
-            < "$RUNNER_TEMP/osaguard-designated-requirement.txt" \
-            | /usr/bin/grep -F "$OSAGUARD_CERT_SHA1"
+          /usr/bin/grep -F -i "$OSAGUARD_CERT_SHA1" \
+            "$RUNNER_TEMP/osaguard-designated-requirement.txt"
           app_executables=("$app_bundle"/Contents/MacOS/*)
           [[ ${#app_executables[@]} == 1 && -f "${app_executables[0]}" ]] || {
             echo "Expected exactly one application executable" >&2
