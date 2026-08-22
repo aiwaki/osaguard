@@ -143,6 +143,8 @@ jobs:
       - name: Build preview artifacts
         working-directory: app-tauri
         shell: bash
+        env:
+          OSAGUARD_PREVIEW_SEQUENCE: ${{ inputs.preview }}
         run: |
           set -euo pipefail
           node ../scripts/check-release-version.mjs

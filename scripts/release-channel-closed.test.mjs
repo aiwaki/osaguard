@@ -8,9 +8,17 @@ const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryDirectory = dirname(scriptsDirectory);
 
 test("stable binary release remains closed while hosted ad-hoc preview publication is explicit", async () => {
-  const [releaseWorkflow, publishWorkflow, previewWorkflow, releaseGuide, englishReadme] =
-    await Promise.all([
-    readFile(join(repositoryDirectory, ".github", "workflows", "release.yml"), "utf8"),
+  const [
+    releaseWorkflow,
+    publishWorkflow,
+    previewWorkflow,
+    releaseGuide,
+    englishReadme,
+  ] = await Promise.all([
+    readFile(
+      join(repositoryDirectory, ".github", "workflows", "release.yml"),
+      "utf8",
+    ),
     readFile(
       join(repositoryDirectory, ".github", "workflows", "publish-release.yml"),
       "utf8",
@@ -46,6 +54,10 @@ test("stable binary release remains closed while hosted ad-hoc preview publicati
   assert.match(previewWorkflow, /\[\[ "\$PREVIEW" == 1 \]\]/);
   assert.match(previewWorkflow, /\[\[ "\$version" == 0\.1\.1 \]\]/);
   assert.match(previewWorkflow, /echo "preview=\$PREVIEW"/);
+  assert.match(
+    previewWorkflow,
+    /OSAGUARD_PREVIEW_SEQUENCE: \$\{\{ inputs\.preview \}\}/,
+  );
   assert.match(previewWorkflow, /tag="v\$\{version\}-preview\.\$\{PREVIEW\}"/);
   assert.match(previewWorkflow, /preview\.\$\{RELEASE_PREVIEW\}_aarch64/);
   assert.doesNotMatch(previewWorkflow, /preview\.1_aarch64|\(Preview 1\)/);
