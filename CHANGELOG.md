@@ -6,7 +6,18 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2-preview.1] - 2026-08-23
+
+### Fixed
+
+- the installed copy now relaunches only after the DMG process releases the
+  single-instance lock.
+- in-place replacement keeps rollback available and moves the previous app to
+  the Trash only after the delayed relaunch has been scheduled.
+
 ## [0.1.1-preview.1] - 2026-08-23
+
+Withdrawn after local release-artifact qualification found a relaunch race.
 
 ### Fixed
 
@@ -66,6 +77,7 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   can access it; previews use GitHub-hosted ad-hoc bundles only.
 
 [Unreleased]: https://github.com/aiwaki/osaguard/commits/main
+[0.1.2-preview.1]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.2-preview.1
 [0.1.1-preview.1]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.1-preview.1
 [0.1.0-preview.1]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.0-preview.1
 [0.1.0]: https://github.com/aiwaki/osaguard/tree/main

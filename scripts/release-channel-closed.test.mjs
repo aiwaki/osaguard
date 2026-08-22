@@ -52,7 +52,7 @@ test("stable binary release remains closed while hosted ad-hoc preview publicati
   assert.match(previewWorkflow, /actions\/attest@[0-9a-f]{40}/);
   assert.match(previewWorkflow, /default: "1"/);
   assert.match(previewWorkflow, /\[\[ "\$PREVIEW" == 1 \]\]/);
-  assert.match(previewWorkflow, /\[\[ "\$version" == 0\.1\.1 \]\]/);
+  assert.match(previewWorkflow, /\[\[ "\$version" == 0\.1\.2 \]\]/);
   assert.match(previewWorkflow, /echo "preview=\$PREVIEW"/);
   assert.match(
     previewWorkflow,

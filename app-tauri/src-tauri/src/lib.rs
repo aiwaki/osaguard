@@ -1533,16 +1533,20 @@ fn bundle_version(path: &Path) -> Result<[u64; 3], String> {
     parse_bundle_version(version)
 }
 
-fn open_application(path: &Path) -> Result<(), String> {
-    Command::new("/usr/bin/open")
-        .arg("-n")
+fn schedule_open_application(path: &Path) -> Result<(), String> {
+    Command::new("/bin/sh")
+        .args([
+            "-c",
+            "/bin/sleep 1; exec /usr/bin/open -n \"$1\"",
+            "osaguard-relaunch",
+        ])
         .arg(path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("open installed application: {error}"))
+        .map_err(|error| format!("schedule installed application relaunch: {error}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -1574,7 +1578,7 @@ fn install_application_bundle() -> Result<InstallResult, String> {
     let replacing = if destination.exists() {
         verify_bundle(destination)?;
         if source_version <= bundle_version(destination)? {
-            open_application(destination)?;
+            schedule_open_application(destination)?;
             return Ok(InstallResult {
                 outcome: "opened_existing".into(),
             });
@@ -1630,7 +1634,7 @@ fn install_application_bundle() -> Result<InstallResult, String> {
                 )),
             };
         }
-        if let Err(error) = open_application(destination) {
+        if let Err(error) = schedule_open_application(destination) {
             let displaced = fs::rename(destination, &temporary);
             let restored = fs::rename(&backup, destination);
             let _ = fs::remove_dir_all(&temporary);
@@ -1655,7 +1659,15 @@ fn install_application_bundle() -> Result<InstallResult, String> {
         let _ = fs::remove_dir_all(&temporary);
         return Err(format!("finish OsaGuard installation: {error}"));
     }
-    open_application(destination)?;
+    if let Err(error) = schedule_open_application(destination) {
+        let cleanup = fs::remove_dir_all(destination);
+        return match cleanup {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(format!(
+                "{error}; remove incomplete OsaGuard installation: {cleanup_error}"
+            )),
+        };
+    }
     Ok(InstallResult {
         outcome: "installed".into(),
     })
@@ -1673,7 +1685,7 @@ async fn install_app(app: AppHandle) -> Result<InstallResult, String> {
     ) {
         let app = app.clone();
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(900));
+            thread::sleep(Duration::from_millis(250));
             app.exit(0);
         });
     }

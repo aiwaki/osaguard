@@ -1,6 +1,6 @@
 [package]
 name = "osaguard-tray"
-version = "0.1.1"
+version = "0.1.2"
 description = "OsaGuard menu-bar app and first-run setup"
 authors = ["aiwaki"]
 edition = "2021"

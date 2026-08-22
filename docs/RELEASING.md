@@ -6,7 +6,7 @@ OsaGuard may be published as an explicitly labelled **GitHub prerelease** withou
 an Apple Developer membership. This matches the project's Slipstream preview
 model, not a stable macOS distribution channel.
 
-The current preview is `v0.1.1-preview.1`:
+The current preview is `v0.1.2-preview.1`:
 
 - Apple Silicon and macOS 13+ only;
 - built on a disposable GitHub-hosted `macos-14` runner;

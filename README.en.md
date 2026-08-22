@@ -19,7 +19,7 @@ AppleScript and enter and submit a saved password.
 ## Distribution status
 
 OsaGuard is released as a **Preview** through [GitHub Releases](https://github.com/aiwaki/osaguard/releases).
-The current corrected build, `v0.1.1-preview.1`, is for Apple Silicon and macOS 13+. It is
+The current corrected build, `v0.1.2-preview.1`, is for Apple Silicon and macOS 13+. It is
 a manual preview installation, not the stable channel.
 
 The project has no Apple Developer Program membership, Developer ID identity, or
@@ -31,7 +31,7 @@ download later previews manually from Releases.
 ### Installing the preview
 
 1. Open the newest [**Pre-release**](https://github.com/aiwaki/osaguard/releases).
-2. Download `OsaGuard_0.1.1_preview.1_aarch64.dmg` and move the app to
+2. Download `OsaGuard_0.1.2_preview.1_aarch64.dmg` and move the app to
    Applications.
 3. Run OsaGuard only from Applications. If macOS warns about the unnotarized
    preview, do not disable Gatekeeper globally: use Finder's contextual **Open**
