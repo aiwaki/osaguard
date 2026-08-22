@@ -8,9 +8,9 @@ menu, update, uninstall, language, privacy, or security-warning behavior changes
 |---|---|
 | [Security design](SECURITY_DESIGN.md) | Trust boundaries, password handling, prompt recognition, and the unavoidable same-user risk. |
 | [Qualification](QUALIFICATION.md) | Evidence already collected and live gates that remain external. |
-| [Releasing](RELEASING.md) | Self-signed release identity, updater keys, immutable artifacts, qualification, and publication. |
+| [Releasing](RELEASING.md) | Public-app release gate and the future Developer ID/notarization procedure. |
 
-Public releases use one permanent self-signed certificate and are not notarized;
-source builds remain ad-hoc signed. Public release integrity additionally
-depends on the permanent Tauri updater key and the fail-closed certificate, DR,
-and artifact qualification described above.
+There is no public OsaGuard app release or updater channel today. Source builds
+remain ad-hoc signed; the binary-release workflows are intentionally fail-closed
+until Apple-issued Developer ID signing, notarization, and stapling can be
+properly qualified.

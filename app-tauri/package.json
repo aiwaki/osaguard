@@ -18,7 +18,6 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "prepare:release-config": "node ../scripts/generate-release-config.mjs",
     "check:version": "node ../scripts/check-release-version.mjs",
     "check:action-pins": "node ../scripts/check-action-pins.mjs",
     "check:release-assets": "node --test ../scripts/release-assets.test.mjs",

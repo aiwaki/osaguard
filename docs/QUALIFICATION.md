@@ -1,5 +1,14 @@
 # OsaGuard qualification record
 
+## Distribution status
+
+This is source and local-development qualification evidence, **not** a public
+application release record. OsaGuard currently has no Apple Developer Program
+membership, Developer ID Application certificate, notarization ticket, public
+DMG, or updater channel. The available evidence must not be used to advertise
+or publish a user-facing binary. See [Releasing OsaGuard](RELEASING.md) for the
+closed release gate.
+
 ## 2026-08-13 — macOS 26.5.2 (25F84), Apple Silicon
 
 Environment:
@@ -18,7 +27,7 @@ Rust-owned worker thread inside that single app process.
 Some evidence below covers the advanced exact-rule CLI retained in the
 repository. That evidence is useful for the shared SecurityAgent and targeted
 injection code, but exact-rule policies, root-owned installation, and sudoers
-are **not** properties of the universal public app mode.
+are **not** properties of the universal menu-bar app mode.
 
 ## Current Tauri application
 
@@ -43,7 +52,7 @@ The Tauri v2 app was qualified with these current architectural properties:
 Rust tests and `cargo clippy --all-targets --all-features -- -D warnings` passed
 for this implementation. The local app is ad-hoc signed and is not notarized.
 
-### Local ad-hoc and public release identities
+### Local ad-hoc identity; no public release identity
 
 An ad-hoc rebuild has a new code identity from TCC's perspective. Accessibility
 must be tested only after removing the old OsaGuard row, installing the rebuilt
@@ -51,13 +60,11 @@ app in `/Applications`, launching that exact app, requesting access again, and
 enabling the new row. An old enabled-looking row is not proof that the rebuilt
 app is trusted.
 
-Public releases use a different model: one permanent self-signed Code Signing
-certificate and a certificate-and-identifier designated requirement. The
-certificate is not Apple-issued and releases are not notarized, so first launch
-still requires the documented Finder **right-click → Open** path. The stable DR
-is intended to preserve TCC and Keychain identity across public updates. A local
-replacement or certificate rotation requires setup again. The mandatory Tauri
-signature independently authenticates every update archive.
+No public release identity is provisioned. A self-signed certificate, ad-hoc
+signature, local trust change, or Finder bypass is not a substitute for
+Developer ID signing and notarization and must not be used to create a public
+release. There is likewise no current TCC/Keychain-continuity claim across
+versions and no public updater archive to authenticate.
 
 ## Universal watcher checks
 
@@ -197,28 +204,17 @@ This live gate must also confirm that setup status advances after the Tauri main
 process receives the new TCC grant. It must not be performed by automation with
 the user's real password.
 
-The stable release workflow now imports a password-protected P12 containing the
-fixed `OsaGuard Release Code Signing` identity into a temporary Keychain. It
-keeps both architectures in draft while it checks `latest.json`, exact-tag asset
-URLs, detached updater signatures against the permanent public key, bundle
-identifier and version, an exact one-file `Contents/MacOS/osaguard-tray`
-layout and architecture, non-ad-hoc hardened-runtime signatures, and the app
-inside each DMG. Qualification pins the exact
-certificate SHA-256, requires identical app DRs across architectures, and
-requires SHA-256, CodeDirectory, CDHash, certificate and DR equality between
-updater archive and DMG. It attaches that evidence as `CODE_IDENTITIES.txt` and
-leaves the result as a verified draft. A separate protected, explicitly
-acknowledged publication workflow rechecks the draft before making it GitHub's
-Latest stable release.
+There is no qualified binary-release workflow today. The earlier self-signed-P12
+release path is retired for public distribution and is not evidence of a
+shippable identity. No DMG, updater archive, `latest.json`, release draft, or
+public tag may be presented as installable while the release gate is closed.
 
-The remaining external gates are a real workflow run with the permanent updater
-key and self-signed P12, plus the physical first-DMG/next-version canary on Apple
-Silicon and Intel. That canary must cover Gatekeeper's manual **Open** path,
-native notification and tray fallback, restart, offline and corrupted-package
-failures, and retained Accessibility/Keychain access. It must compare the exact
-certificate fingerprint and app DR across the two manifests, then test
-retrieval of the existing Keychain item before any re-save. CDHash continuity is
-not required: the hosted cgo/Xcode toolchain is not a reproducible-build
-boundary. The procedure is recorded in
-[Releasing OsaGuard](RELEASING.md); none of those external gates is claimed by
-the local ad-hoc qualification above.
+If the project later obtains Apple distribution credentials, the remaining
+external gates are Developer ID signing, Apple notarization and stapling, a
+reviewed updater key and endpoint, a protected draft release, and physical
+first-install/N → N+1 canaries on Apple Silicon and Intel. Those canaries must
+cover native notification and tray fallback, explicit install confirmation,
+restart, offline and corrupted-payload failures, watcher recovery, and retained
+Accessibility/Keychain access before any password is re-saved. The exact future
+procedure is in [Releasing OsaGuard](RELEASING.md); none of those gates is
+claimed by this local ad-hoc qualification.

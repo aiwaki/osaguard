@@ -79,11 +79,11 @@ choose an executable path, watcher account, or native bridge operation.
   removed.
 
 The current Keychain integration uses the file-based macOS Keychain with an
-explicit caller ACL. Public apps are signed with one permanent self-signed
-certificate, so the certificate-and-identifier designated requirement is
-intended to remain stable even when the app's CDHash changes. Local ad-hoc
-builds do not share that identity. A future release may evaluate migration to
-the data-protection Keychain.
+explicit caller ACL. There is no released public app identity today. Local
+ad-hoc builds do not provide a cross-version identity guarantee, so a future
+Apple-signed release must separately qualify TCC and Keychain continuity before
+it can claim retained setup. A future release may evaluate migration to the
+data-protection Keychain.
 
 ## Authorization-dialog checks
 
@@ -154,31 +154,15 @@ request, and the statically linked watcher operates in that same app process.
 
 Source and ordinary CI builds are ad-hoc signed and are not notarized. **Each
 local ad-hoc rebuild can have a new code identity from TCC's perspective**, even
-when its bundle identifier and path are unchanged. Public releases instead use
-one permanent self-signed Code Signing certificate and a stable designated
-requirement. The certificate is not issued by Apple, does not identify the
-publisher to Gatekeeper, and does not provide notarization. First launch remains
-a Finder **right-click → Open** flow.
+when its bundle identifier and path are unchanged. There is no public OsaGuard
+DMG, updater archive, or continuity claim across versions. A self-signed
+certificate, locally trusted identity, or Finder bypass must never be used as a
+replacement for Developer ID signing and notarization.
 
-The public certificate and identifier are intended to let TCC and Keychain track
-successive public versions. Replacing a public build with a local build, or
-rotating the certificate, breaks that continuity and can require removing the
-old OsaGuard Accessibility row, granting the exact new installed build access,
-and saving the password again.
-
-Every release includes `CODE_IDENTITIES.txt` with the exact certificate SHA-256,
-the app designated requirement, and each `osaguard-tray` architecture's SHA-256,
-CodeDirectory and CDHash. Qualification rejects ad-hoc signatures, pins the
-certificate, requires exact DR equality across architectures, and proves that
-updater archive and DMG copies agree. CDHashes may change across releases; the
-certificate-and-identifier DR is the continuity boundary. Keychain and TCC
-continuity remain physical `N → N+1` canary requirements.
-
-The permanent Tauri updater signature independently authenticates the downloaded
-archive and is required before installation. The self-signed macOS certificate
-provides the stable DR but still does not give the app an Apple developer
-identity or notarization. Gatekeeper may therefore require Finder's **Open**
-confirmation for a manually installed DMG.
+The source includes a Tauri updater implementation, but it remains in
+test-build/fail-closed mode until a future Apple-signed, notarized channel has
+passed full artifact and `N → N+1` continuity qualification. See
+[Releasing OsaGuard](RELEASING.md) for that hard gate.
 
 ## Advanced exact-rule CLI (separate capability)
 

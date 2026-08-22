@@ -17,12 +17,11 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - menu-bar application prototype and launch-at-login integration.
 - exact-rule developer tooling and security qualification tests.
 - beginner documentation in English and Russian.
-- stable GitHub release automation for Apple Silicon and Intel, with mandatory
-  Tauri updater signatures and immutable update metadata.
-- a release identity manifest recording the `osaguard-tray` app executable's
-  CodeDirectory, CDHash, and SHA-256 for both architectures.
-- a one-time, Keychain-free bootstrap for the permanent release certificate and
-  Tauri updater key, stored outside the source checkout.
+- fail-closed GitHub workflows that prevent binary release creation and
+  publication until Apple-issued Developer ID signing, notarization, and
+  stapling can be qualified.
+- source-level Tauri updater implementation and release documentation, kept
+  disabled until a real authenticated public channel exists.
 
 ### Changed
 
@@ -35,14 +34,8 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already running in the configured user account.
 - password input is kept outside Tauri JavaScript, command arguments, environment
   variables, logs, and the clipboard.
-- release signing authenticates the certificate pin in an isolated temporary
-  Keychain before it changes the runner's Keychain search list; it does not add
-  user or system trust settings.
+- the earlier self-signed-P12 release experiment is retired. No binary release
+  workflow can access it, and no public DMG or updater channel exists.
 
-Public DMGs use OsaGuard's permanent self-signed code-signing certificate and
-are not notarized by Apple. The first installed release is manual (Finder
-right-click → Open); later stable releases use the separately signed Tauri
-updater channel.
-
-[Unreleased]: https://github.com/aiwaki/osaguard/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.0
+[Unreleased]: https://github.com/aiwaki/osaguard/commits/main
+[0.1.0]: https://github.com/aiwaki/osaguard/tree/main
