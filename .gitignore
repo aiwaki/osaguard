@@ -1,0 +1,16 @@
+/build/
+/autotype-policy.json
+*.log
+/app-tauri/node_modules/
+/app-tauri/src-tauri/target/
+/app-tauri/src-tauri/gen/
+/app-tauri/src-tauri/binaries/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.p12
+*.p8
+*.cer
+*.mobileprovision
+*.key

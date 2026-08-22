@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/aiwaki/osaguard/security/advisories/new
+    about: Report vulnerabilities privately. Never disclose credentials in an issue.
+  - name: Documentation in Russian
+    url: https://github.com/aiwaki/osaguard/blob/main/README.md
+    about: Read installation, safety, troubleshooting, and uninstall guidance in Russian.

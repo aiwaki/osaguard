@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>OsaGuard</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./main.js"></script>
+  </head>
+  <body>
+    <main id="app" aria-live="polite">
+      <section class="loading-screen">
+        <img class="loading-logo" src="./icon.png" alt="" />
+        <div class="spinner" aria-hidden="true"></div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <dialog id="modal" class="modal">
+      <div class="modal-mark" aria-hidden="true">!</div>
+      <h2 id="modal-title"></h2>
+      <p id="modal-body"></p>
+      <div class="modal-actions">
+        <button id="modal-cancel" class="button secondary" type="button"></button>
+        <button id="modal-confirm" class="button danger" type="button"></button>
+      </div>
+    </dialog>
+  </body>
+</html>

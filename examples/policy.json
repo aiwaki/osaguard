@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "actions": {
+    "root-id": {
+      "description": "Safe installation smoke test: print the effective root uid",
+      "executable": "/usr/bin/id",
+      "arguments": ["-u"],
+      "timeout_seconds": 5
+    }
+  }
+}

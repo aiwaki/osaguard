@@ -1,0 +1,32 @@
+{
+  "name": "osaguard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OsaGuard macOS menu-bar application",
+  "license": "MIT",
+  "homepage": "https://github.com/aiwaki/osaguard#readme",
+  "bugs": {
+    "url": "https://github.com/aiwaki/osaguard/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aiwaki/osaguard.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "prepare:release-config": "node ../scripts/generate-release-config.mjs",
+    "check:version": "node ../scripts/check-release-version.mjs",
+    "check:action-pins": "node ../scripts/check-action-pins.mjs",
+    "check:release-assets": "node --test ../scripts/release-assets.test.mjs",
+    "test": "node --test tests/*.test.mjs ../scripts/*.test.mjs",
+    "build:app": "tauri build --bundles app",
+    "build:local": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

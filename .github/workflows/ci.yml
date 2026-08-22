@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-bundle:
+    name: Test and build macOS app
+    runs-on: macos-14
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: app-tauri/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
+        with:
+          components: clippy,rustfmt
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: app-tauri/src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: app-tauri
+        run: npm ci
+
+      - name: Audit npm dependencies
+        working-directory: app-tauri
+        run: npm audit --audit-level=high
+
+      - name: Check release version metadata
+        run: node scripts/check-release-version.mjs
+
+      - name: Require immutable action pins
+        run: node scripts/check-action-pins.mjs
+
+      - name: Test frontend state and release tooling
+        working-directory: app-tauri
+        run: npm test
+
+      - name: Run Go tests with race detector
+        run: go test -race ./...
+
+      - name: Vet Go code
+        run: go vet ./...
+
+      - name: Check Rust formatting
+        working-directory: app-tauri/src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Run Rust tests
+        working-directory: app-tauri/src-tauri
+        run: cargo test --locked
+
+      - name: Lint Rust code
+        working-directory: app-tauri/src-tauri
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Install shellcheck
+        run: brew install shellcheck
+
+      - name: Check shell scripts
+        # SC1007 is excluded for the existing intentional `CDPATH= cd` idiom.
+        run: shellcheck -e SC1007 scripts/*.sh
+
+      - name: Check property lists
+        run: find resources -type f -name '*.plist' -print0 | xargs -0 -n1 plutil -lint
+
+      - name: Build ad-hoc signed app and DMG
+        working-directory: app-tauri
+        run: npm run build:local
+
+      - name: Verify bundled application signature
+        run: codesign --verify --deep --strict --verbose=2 app-tauri/src-tauri/target/release/bundle/macos/OsaGuard.app

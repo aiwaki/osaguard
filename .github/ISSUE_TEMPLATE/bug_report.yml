@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a reproducible OsaGuard problem (not a security vulnerability)
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve OsaGuard. Do not include passwords, Keychain exports, tokens, personal information, or unredacted authentication screenshots.
+
+        Security vulnerabilities must be reported privately through the Security link shown on the issue chooser.
+  - type: input
+    id: version
+    attributes:
+      label: OsaGuard version or commit
+      description: Use “source build” plus the commit hash when building locally.
+      placeholder: source build, commit abc1234
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS and Mac
+      placeholder: macOS 15.6, Apple Silicon
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation source
+      options:
+        - Built from source
+        - GitHub Release DMG
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Installation or first setup
+        - Accessibility permission
+        - Keychain password setup
+        - Prompt recognition or automatic entry
+        - Menu bar or preferences
+        - Updates
+        - Uninstall
+        - Developer tooling
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Explain what you observed and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open…
+        2. Choose…
+        3. Observe…
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Paste only relevant output after removing secrets, usernames, private paths, and personal data.
+      render: shell
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed passwords, credentials, and private data from this report.
+          required: true
+        - label: This is not a vulnerability report requiring private disclosure.
+          required: true
+        - label: I checked existing issues for the same symptom.
+          required: true

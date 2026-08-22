@@ -1,0 +1,234 @@
+name: Publish qualified release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact qualified draft tag to publish, for example v0.1.1
+        required: true
+        type: string
+      publish_acknowledgement:
+        description: Type PUBLISH vX.Y.Z with the exact tag to make this draft public
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-stable
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Requalify and publish exact draft
+    runs-on: macos-14
+    timeout-minutes: 30
+    # This reference only selects an Environment. Repository administrators must
+    # configure its required reviewers and main-only deployment branch rule.
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Require a main dispatch and explicit acknowledgement
+        env:
+          PUBLISH_ACKNOWLEDGEMENT: ${{ inputs.publish_acknowledgement }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || {
+            echo "Publication must be dispatched from main" >&2
+            exit 1
+          }
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "release_tag must be a stable vMAJOR.MINOR.PATCH tag" >&2
+            exit 1
+          }
+          [[ "$PUBLISH_ACKNOWLEDGEMENT" == "PUBLISH $RELEASE_TAG" ]] || {
+            echo "Type exactly: PUBLISH $RELEASE_TAG" >&2
+            exit 1
+          }
+
+      - name: Check out main dispatch source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the exact qualified draft and its source commit
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          release_id=$(gh api "$api" --jq '.id')
+          release_tag=$(gh api "$api" --jq '.tag_name')
+          release_commit=$(gh api "$api" --jq '.target_commitish')
+          release_draft=$(gh api "$api" --jq '.draft')
+          release_prerelease=$(gh api "$api" --jq '.prerelease')
+          release_body=$(gh api "$api" --jq '.body')
+
+          [[ "$release_id" =~ ^[0-9]+$ ]]
+          [[ "$release_tag" == "$RELEASE_TAG" ]]
+          [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$release_draft" == true ]]
+          [[ "$release_prerelease" == false ]]
+          grep -Fq '**Критически важно:**' <<< "$release_body"
+          grep -Fq '**Critical security warning:**' <<< "$release_body"
+          grep -Fq 'right-click the app in Finder' <<< "$release_body"
+          grep -Fq 'is not notarized by Apple' <<< "$release_body"
+
+          git fetch --no-tags origin "$release_commit"
+          git fetch --no-tags origin main
+          git cat-file -e "$release_commit^{commit}"
+          git merge-base --is-ancestor "$release_commit" origin/main
+          git checkout --detach "$release_commit"
+          [[ "$(git rev-parse HEAD)" == "$release_commit" ]]
+          {
+            echo "id=$release_id"
+            echo "commit=$release_commit"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js for the exact release source
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Verify the checked-out source matches the requested tag
+        env:
+          RELEASE_COMMIT: ${{ steps.draft.outputs.commit }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$RELEASE_COMMIT" ]]
+          version=$(node -p "require('./app-tauri/package.json').version")
+          [[ "$RELEASE_TAG" == "v${version}" ]]
+          node scripts/check-release-version.mjs
+
+      - name: Download one exact asset set from the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${RELEASE_TAG#v}
+          expected_assets=(
+            "OsaGuard_${version}_aarch64.dmg"
+            "OsaGuard_${version}_x64.dmg"
+            "OsaGuard_${version}_aarch64.app.tar.gz"
+            "OsaGuard_${version}_aarch64.app.tar.gz.sig"
+            "OsaGuard_${version}_x64.app.tar.gz"
+            "OsaGuard_${version}_x64.app.tar.gz.sig"
+            "latest.json"
+            "CODE_IDENTITIES.txt"
+            "SHA256SUMS"
+          )
+          actual_listing=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" \
+            --jq '.[].name' | LC_ALL=C sort)
+          expected_listing=$(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort)
+          [[ "$actual_listing" == "$expected_listing" ]] || {
+            echo "The draft does not contain one exact qualified OsaGuard asset set" >&2
+            exit 1
+          }
+
+          mkdir release-assets
+          for asset_name in "${expected_assets[@]}"; do
+            asset_id=$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" \
+              --jq ".[] | select(.name == \"${asset_name}\") | .id")
+            [[ "$asset_id" =~ ^[0-9]+$ ]]
+            gh api -H 'Accept: application/octet-stream' \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+              > "release-assets/${asset_name}"
+            [[ -s "release-assets/${asset_name}" ]]
+          done
+
+      - name: Requalify release assets and checksums before publication
+        env:
+          OSAGUARD_CODE_SIGNING_CERTIFICATE_SHA256: ${{ vars.OSAGUARD_CODE_SIGNING_CERTIFICATE_SHA256 }}
+          OSAGUARD_UPDATER_PUBLIC_KEY: ${{ vars.OSAGUARD_UPDATER_PUBLIC_KEY }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${RELEASE_TAG#v}
+          checksum_assets=(
+            "OsaGuard_${version}_aarch64.dmg"
+            "OsaGuard_${version}_x64.dmg"
+            "OsaGuard_${version}_aarch64.app.tar.gz"
+            "OsaGuard_${version}_aarch64.app.tar.gz.sig"
+            "OsaGuard_${version}_x64.app.tar.gz"
+            "OsaGuard_${version}_x64.app.tar.gz.sig"
+            "latest.json"
+            "CODE_IDENTITIES.txt"
+          )
+          actual_checksum_listing=$(/usr/bin/awk 'NF != 2 { exit 1 } { print $2 }' \
+            release-assets/SHA256SUMS | LC_ALL=C sort)
+          expected_checksum_listing=$(printf '%s\n' "${checksum_assets[@]}" | LC_ALL=C sort)
+          [[ "$actual_checksum_listing" == "$expected_checksum_listing" ]] || {
+            echo "SHA256SUMS does not cover exactly the qualified draft assets" >&2
+            exit 1
+          }
+          (
+            cd release-assets
+            /usr/bin/shasum -a 256 -c SHA256SUMS
+          )
+
+          mkdir qualified-assets
+          for asset_name in \
+            "OsaGuard_${version}_aarch64.dmg" \
+            "OsaGuard_${version}_x64.dmg" \
+            "OsaGuard_${version}_aarch64.app.tar.gz" \
+            "OsaGuard_${version}_aarch64.app.tar.gz.sig" \
+            "OsaGuard_${version}_x64.app.tar.gz" \
+            "OsaGuard_${version}_x64.app.tar.gz.sig" \
+            latest.json; do
+            /bin/cp "release-assets/${asset_name}" "qualified-assets/${asset_name}"
+          done
+          node scripts/validate-release-assets.mjs qualified-assets "$RELEASE_TAG" "$GITHUB_REPOSITORY"
+          scripts/qualify-release-artifacts.sh qualified-assets "$RELEASE_TAG" "$GITHUB_REPOSITORY"
+          cmp qualified-assets/CODE_IDENTITIES.txt release-assets/CODE_IDENTITIES.txt
+
+      - name: Publish the exact revalidated draft as Latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.draft.outputs.commit }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"
+          [[ "$(gh api "$api" --jq '.tag_name')" == "$RELEASE_TAG" ]]
+          [[ "$(gh api "$api" --jq '.target_commitish')" == "$RELEASE_COMMIT" ]]
+          [[ "$(gh api "$api" --jq '.draft')" == true ]]
+          [[ "$(gh api "$api" --jq '.prerelease')" == false ]]
+          gh api --method PATCH "$api" \
+            -F draft=false \
+            -F prerelease=false \
+            -f make_latest=true \
+            --silent
+          [[ "$(gh api "$api" --jq '.draft')" == false ]]
+          [[ "$(gh api "$api" --jq '.prerelease')" == false ]]
+          latest_id=""
+          for _ in {1..10}; do
+            latest_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.id' 2>/dev/null || true)
+            [[ "$latest_id" == "$RELEASE_ID" ]] && break
+            sleep 2
+          done
+          [[ "$latest_id" == "$RELEASE_ID" ]]
+          {
+            echo "## Published OsaGuard release"
+            echo
+            echo "The exact qualified draft was re-downloaded, its checksums and code identities were re-verified, then it was made Latest."
+            echo "Release tag: $RELEASE_TAG"
+            echo "Source commit: $RELEASE_COMMIT"
+          } >> "$GITHUB_STEP_SUMMARY"
