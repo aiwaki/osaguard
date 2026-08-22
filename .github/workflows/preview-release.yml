@@ -222,9 +222,22 @@ jobs:
             -F prerelease=true \
             --jq '.id')
           [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
-          gh release upload "$RELEASE_TAG" \
-            app-tauri/release-assets/* \
-            --clobber
+          for asset in app-tauri/release-assets/*; do
+            asset_name=$(basename "$asset")
+            [[ "$asset_name" =~ ^[A-Za-z0-9._-]+$ && -s "$asset" ]] || {
+              echo "Unsafe or empty preview asset: $asset_name" >&2
+              exit 1
+            }
+            /usr/bin/curl --fail --silent --show-error \
+              --request POST \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Accept: application/vnd.github+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              --header "Content-Type: application/octet-stream" \
+              --data-binary "@$asset" \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=${asset_name}" \
+              > "$RUNNER_TEMP/osaguard-upload-${asset_name}.json"
+          done
 
           api="repos/${GITHUB_REPOSITORY}/releases/${release_id}"
           [[ "$(gh api "$api" --jq '.tag_name')" == "$RELEASE_TAG" ]]
