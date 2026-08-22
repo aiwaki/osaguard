@@ -84,7 +84,7 @@ jobs:
           cache-dependency-path: app-tauri/package-lock.json
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # v1
+        uses: dtolnay/rust-toolchain@1d1eb14921d9c2d8ea575663e5fe3a0b57868a05 # 1.89.0
         with:
           components: clippy,rustfmt
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -274,7 +274,7 @@ jobs:
           cache-dependency-path: app-tauri/package-lock.json
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # v1
+        uses: dtolnay/rust-toolchain@1d1eb14921d9c2d8ea575663e5fe3a0b57868a05 # 1.89.0
         with:
           components: clippy,rustfmt
           targets: aarch64-apple-darwin,x86_64-apple-darwin
