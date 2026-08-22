@@ -1,5 +1,6 @@
 import {
   bootstrapRuntime,
+  normalizeInstallAction,
   normalizeKeychainItemState,
   normalizeUpdateStatus,
   passwordOutcome,
@@ -24,6 +25,27 @@ const copy = {
     installStep3: "Set up",
     installStep3Copy: "Grant access and enter your password once.",
     installButton: "Install in Applications",
+    installUpdateEyebrow: "Update ready",
+    installUpdateTitle: "Update OsaGuard in Applications",
+    installUpdateCopy:
+      "This DMG contains a newer OsaGuard. The installed copy will be replaced safely, then the updated app will open automatically.",
+    installUpdateStep1Copy: "The newer OsaGuard.app replaces the older installed copy.",
+    installUpdateButton: "Update in Applications",
+    installExistingEyebrow: "Already installed",
+    installExistingTitle: "OsaGuard is already in Applications",
+    installExistingCopy:
+      "This DMG contains the same version. Continue in the installed copy; nothing will be copied or replaced.",
+    installExistingButton: "Open installed OsaGuard",
+    installNewerEyebrow: "Newer version installed",
+    installNewerTitle: "A newer OsaGuard is already in Applications",
+    installNewerCopy:
+      "This DMG is older than the installed app and will not replace it. Continue in the newer installed copy.",
+    installNewerButton: "Open newer OsaGuard",
+    installUnavailableEyebrow: "Installation unavailable",
+    installUnavailableTitle: "Open OsaGuard from its DMG",
+    installUnavailableCopy:
+      "This copy cannot be installed. Open the packaged OsaGuard.app from a downloaded DMG and try again.",
+    installUnavailableButton: "Installation unavailable",
     installFootnote:
       "OsaGuard never configures Accessibility, saves a password or starts at login while running from Downloads or a mounted DMG.",
     setupEyebrow: "One-time setup",
@@ -161,6 +183,27 @@ const copy = {
     installStep3: "Настройка",
     installStep3Copy: "Разрешите доступ и один раз введите пароль.",
     installButton: "Установить в «Программы»",
+    installUpdateEyebrow: "Доступно обновление",
+    installUpdateTitle: "Обновите OsaGuard в «Программах»",
+    installUpdateCopy:
+      "В этом DMG находится более новая OsaGuard. Установленная копия будет безопасно заменена, затем обновлённое приложение откроется само.",
+    installUpdateStep1Copy: "Новая OsaGuard.app заменит прежнюю установленную копию.",
+    installUpdateButton: "Обновить в «Программах»",
+    installExistingEyebrow: "Уже установлено",
+    installExistingTitle: "OsaGuard уже находится в «Программах»",
+    installExistingCopy:
+      "В этом DMG та же версия. Продолжайте в установленной копии — ничего копироваться или заменяться не будет.",
+    installExistingButton: "Открыть установленную OsaGuard",
+    installNewerEyebrow: "Установлена более новая версия",
+    installNewerTitle: "В «Программах» уже установлена более новая OsaGuard",
+    installNewerCopy:
+      "Этот DMG старее установленного приложения и не станет его заменять. Продолжайте в более новой установленной копии.",
+    installNewerButton: "Открыть новую OsaGuard",
+    installUnavailableEyebrow: "Установка недоступна",
+    installUnavailableTitle: "Откройте OsaGuard из DMG",
+    installUnavailableCopy:
+      "Эту копию установить нельзя. Откройте упакованную OsaGuard.app из скачанного DMG и попробуйте снова.",
+    installUnavailableButton: "Установка недоступна",
     installFootnote:
       "При запуске из «Загрузок» или подключённого DMG OsaGuard не настраивает Accessibility, не сохраняет пароль и не добавляется в автозапуск.",
     setupEyebrow: "Одноразовая настройка",
@@ -360,20 +403,76 @@ function stepCard({
     </article>`;
 }
 
+function installPresentation(action) {
+  switch (action) {
+    case "update":
+      return {
+        eyebrow: t.installUpdateEyebrow,
+        title: t.installUpdateTitle,
+        copy: t.installUpdateCopy,
+        step1Copy: t.installUpdateStep1Copy,
+        button: t.installUpdateButton,
+        showFlow: true,
+        disabled: false,
+      };
+    case "open_installed":
+      return {
+        eyebrow: t.installExistingEyebrow,
+        title: t.installExistingTitle,
+        copy: t.installExistingCopy,
+        button: t.installExistingButton,
+        showFlow: false,
+        disabled: false,
+      };
+    case "open_newer_installed":
+      return {
+        eyebrow: t.installNewerEyebrow,
+        title: t.installNewerTitle,
+        copy: t.installNewerCopy,
+        button: t.installNewerButton,
+        showFlow: false,
+        disabled: false,
+      };
+    case "unavailable":
+      return {
+        eyebrow: t.installUnavailableEyebrow,
+        title: t.installUnavailableTitle,
+        copy: t.installUnavailableCopy,
+        button: t.installUnavailableButton,
+        showFlow: false,
+        disabled: true,
+      };
+    default:
+      return {
+        eyebrow: t.installEyebrow,
+        title: t.installTitle,
+        copy: t.installCopy,
+        step1Copy: t.installStep1Copy,
+        button: t.installButton,
+        showFlow: true,
+        disabled: false,
+      };
+  }
+}
+
 function renderInstall() {
+  const presentation = installPresentation(normalizeInstallAction(status.installAction));
+  const flow = presentation.showFlow
+    ? `<div class="install-flow">
+          <div><strong>1 · ${t.installStep1}</strong>${presentation.step1Copy}</div>
+          <div><strong>2 · ${t.installStep2}</strong>${t.installStep2Copy}</div>
+          <div><strong>3 · ${t.installStep3}</strong>${t.installStep3Copy}</div>
+        </div>`
+    : "";
   app.innerHTML = `
     <section class="shell install-screen">
       <article class="install-card">
         <img class="install-logo" src="./icon.png" alt="OsaGuard" />
-        <p class="eyebrow">${t.installEyebrow}</p>
-        <h1>${t.installTitle}</h1>
-        <p class="hero-copy">${t.installCopy}</p>
-        <div class="install-flow">
-          <div><strong>1 · ${t.installStep1}</strong>${t.installStep1Copy}</div>
-          <div><strong>2 · ${t.installStep2}</strong>${t.installStep2Copy}</div>
-          <div><strong>3 · ${t.installStep3}</strong>${t.installStep3Copy}</div>
-        </div>
-        <button class="button large" data-action="install" ${busy ? "disabled" : ""}>${t.installButton}</button>
+        <p class="eyebrow">${presentation.eyebrow}</p>
+        <h1>${presentation.title}</h1>
+        <p class="hero-copy">${presentation.copy}</p>
+        ${flow}
+        <button class="button large" data-action="install" ${busy || presentation.disabled ? "disabled" : ""}>${presentation.button}</button>
         <p class="footnote">${t.installFootnote}</p>
       </article>
     </section>`;

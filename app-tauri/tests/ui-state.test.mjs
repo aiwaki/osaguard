@@ -3,12 +3,27 @@ import test from "node:test";
 
 import {
   bootstrapRuntime,
+  normalizeInstallAction,
   normalizeKeychainItemState,
   normalizeUpdateStatus,
   passwordOutcome,
   updateActionInProgress,
   updateIsInstallable,
 } from "../src/ui-state.mjs";
+
+test("installer actions fail closed when the backend value is missing or unknown", () => {
+  for (const action of [
+    "install",
+    "update",
+    "open_installed",
+    "open_newer_installed",
+    "unavailable",
+  ]) {
+    assert.equal(normalizeInstallAction(action), action);
+  }
+  assert.equal(normalizeInstallAction("replace_without_checking"), "unavailable");
+  assert.equal(normalizeInstallAction(undefined), "unavailable");
+});
 
 test("Keychain item states preserve re-enrollment without trusting unknown values", () => {
   assert.equal(normalizeKeychainItemState("missing"), "missing");

@@ -260,6 +260,7 @@ struct SetupStatus {
     locale: String,
     version: String,
     installed: bool,
+    install_action: InstallAction,
     accessibility_granted: bool,
     password_saved: bool,
     password_state: KeychainItemState,
@@ -270,6 +271,16 @@ struct SetupStatus {
     watcher_running: bool,
     automatic_active: bool,
     update_status: UpdateStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum InstallAction {
+    Install,
+    Update,
+    OpenInstalled,
+    OpenNewerInstalled,
+    Unavailable,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1165,6 +1176,7 @@ fn compute_status(app: &AppHandle) -> Result<SetupStatus, String> {
     let locale = Locale::system();
     let executable = current_executable()?;
     let installed = installed_application_path(&executable);
+    let install_action = install_action_for_executable(&executable);
     let accessibility_granted = accessibility_trusted_from_app_process();
     let (password_state, protected_item_state, risk_acknowledged, enabled, watcher_running) =
         if installed {
@@ -1198,6 +1210,7 @@ fn compute_status(app: &AppHandle) -> Result<SetupStatus, String> {
         locale: locale.code().into(),
         version: app.package_info().version.to_string(),
         installed,
+        install_action,
         accessibility_granted,
         password_saved,
         password_state,
@@ -1531,6 +1544,42 @@ fn bundle_version(path: &Path) -> Result<[u64; 3], String> {
         .and_then(Value::as_string)
         .ok_or("application bundle has no short version")?;
     parse_bundle_version(version)
+}
+
+fn install_action_for_versions(source: [u64; 3], destination: Option<[u64; 3]>) -> InstallAction {
+    match destination {
+        None => InstallAction::Install,
+        Some(destination) if source > destination => InstallAction::Update,
+        Some(destination) if source == destination => InstallAction::OpenInstalled,
+        Some(_) => InstallAction::OpenNewerInstalled,
+    }
+}
+
+fn install_action_for_executable(executable: &Path) -> InstallAction {
+    if installed_application_path(executable) {
+        return InstallAction::OpenInstalled;
+    }
+    let Some(source) = app_bundle_path(executable) else {
+        return InstallAction::Unavailable;
+    };
+    let Ok(source_version) = bundle_version(&source) else {
+        return InstallAction::Unavailable;
+    };
+    let destination = Path::new(INSTALLED_APP);
+    let metadata = match fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return InstallAction::Install;
+        }
+        Err(_) => return InstallAction::Unavailable,
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return InstallAction::Unavailable;
+    }
+    let Ok(destination_version) = bundle_version(destination) else {
+        return InstallAction::Unavailable;
+    };
+    install_action_for_versions(source_version, Some(destination_version))
 }
 
 fn schedule_open_application(path: &Path) -> Result<(), String> {
@@ -2545,10 +2594,11 @@ mod tests {
 
     use super::{
         app_bundle_path, decode_accessibility_request_result, decode_password_state,
-        decode_protected_state, installed_application_path, native_c_string, parse_bundle_version,
-        update_ready_with_error, validate_update_install_request, KeychainItemState,
-        LifecycleCoordinator, LifecycleOperation, LifecyclePhase, OperationGate, ProtectedState,
-        UpdatePhase, UpdateStatus, WatcherProcess, INSTALL_UPDATE_CONFIRMATION,
+        decode_protected_state, install_action_for_versions, installed_application_path,
+        native_c_string, parse_bundle_version, update_ready_with_error,
+        validate_update_install_request, InstallAction, KeychainItemState, LifecycleCoordinator,
+        LifecycleOperation, LifecyclePhase, OperationGate, ProtectedState, UpdatePhase,
+        UpdateStatus, WatcherProcess, INSTALL_UPDATE_CONFIRMATION,
     };
 
     #[test]
@@ -2698,6 +2748,31 @@ mod tests {
         assert!(parse_bundle_version("0.01.1").is_ok());
         assert!(parse_bundle_version("0.1.1.0").is_err());
         assert!([0, 1, 1] > [0, 1, 0]);
+    }
+
+    #[test]
+    fn install_action_matches_the_non_downgrading_installer() {
+        assert_eq!(
+            install_action_for_versions([0, 1, 2], None),
+            InstallAction::Install
+        );
+        assert_eq!(
+            install_action_for_versions([0, 1, 2], Some([0, 1, 1])),
+            InstallAction::Update
+        );
+        assert_eq!(
+            install_action_for_versions([0, 1, 2], Some([0, 1, 2])),
+            InstallAction::OpenInstalled
+        );
+        assert_eq!(
+            install_action_for_versions([0, 1, 2], Some([0, 1, 3])),
+            InstallAction::OpenNewerInstalled
+        );
+        assert_eq!(
+            serde_json::to_value(InstallAction::OpenNewerInstalled)
+                .expect("serialize install action"),
+            serde_json::json!("open_newer_installed")
+        );
     }
 
     #[test]

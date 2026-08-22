@@ -14,6 +14,8 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   single-instance lock.
 - in-place replacement keeps rollback available and moves the previous app to
   the Trash only after the delayed relaunch has been scheduled.
+- a DMG copy now says whether it will install, update, or open the already
+  installed app; older DMGs never offer to replace a newer installed version.
 
 ## [0.1.1-preview.1] - 2026-08-23
 

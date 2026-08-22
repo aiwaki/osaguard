@@ -16,6 +16,18 @@ const KEYCHAIN_ITEM_STATES = new Set([
   "needs_reenrollment",
 ]);
 
+const INSTALL_ACTIONS = new Set([
+  "install",
+  "update",
+  "open_installed",
+  "open_newer_installed",
+  "unavailable",
+]);
+
+export function normalizeInstallAction(value) {
+  return INSTALL_ACTIONS.has(value) ? value : "unavailable";
+}
+
 export function normalizeKeychainItemState(value, readyFallback = false) {
   return KEYCHAIN_ITEM_STATES.has(value)
     ? value
