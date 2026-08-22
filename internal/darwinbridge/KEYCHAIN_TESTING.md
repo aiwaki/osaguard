@@ -12,6 +12,14 @@ a SecurityAgent request for the login Keychain password. Do not set that
 environment variable: the remaining guard test fails before any Keychain API is
 called.
 
+Starting with the persistent-signing preview, production uses the versioned
+`admin-password.v2` and `integrity-state.v2` services. The app must never query,
+read, change, or delete the unversioned items created by earlier ad-hoc builds:
+touching their old ACL is what causes the repeated SecurityAgent ownership
+prompts. Consequently, uninstall removes only items owned in the active v2
+namespace. A legacy item can be removed separately with the older trusted build
+or Keychain Access; automated qualification must leave it untouched.
+
 Do live Keychain qualification manually only in a disposable macOS account or
 VM that contains no real user secrets. Do not switch the default Keychain or
 search list from an automated test: those preferences are user-wide and can

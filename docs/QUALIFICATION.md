@@ -4,9 +4,9 @@
 
 This is source, local-development, and preview-publication qualification
 evidence. OsaGuard has no Apple Developer Program membership, Developer ID
-Application certificate, or notarization ticket. Public preview builds are
-therefore ad-hoc signed, manual-install Apple-Silicon prereleases; they are not
-a stable channel and do not have an updater endpoint. See
+Application certificate, or notarization ticket. Public preview builds are not
+a stable channel. `0.1.3-preview.1` is the manually installed bridge to a
+self-signed preview identity and a separately signed Tauri updater channel. See
 [Releasing OsaGuard](RELEASING.md) for the exact boundary.
 
 ## 2026-08-13 — macOS 26.5.2 (25F84), Apple Silicon
@@ -52,19 +52,26 @@ The Tauri v2 app was qualified with these current architectural properties:
 Rust tests and `cargo clippy --all-targets --all-features -- -D warnings` passed
 for this implementation. The local app is ad-hoc signed and is not notarized.
 
-### Ad-hoc preview identity; no stable release identity
+### Preview identity; no stable release identity
 
-An ad-hoc rebuild has a new code identity from TCC's perspective. Accessibility
-must be tested only after removing the old OsaGuard row, installing the rebuilt
-app in `/Applications`, launching that exact app, requesting access again, and
-enabling the new row. An old enabled-looking row is not proof that the rebuilt
-app is trusted.
+An ad-hoc local rebuild has a new code identity from TCC's perspective.
+Accessibility must be tested only after removing the old OsaGuard row,
+installing the rebuilt app in `/Applications`, launching that exact app,
+requesting access again, and enabling the new row. An old enabled-looking row
+is not proof that the rebuilt app is trusted.
 
 No stable public release identity is provisioned. A self-signed certificate,
 ad-hoc signature, local trust change, or Finder contextual Open is not a
-substitute for Developer ID signing and notarization. The GitHub preview is
-deliberately labelled ad-hoc and makes no TCC/Keychain-continuity claim across
-versions; it has no public updater archive to authenticate.
+substitute for Developer ID signing and notarization. The old `0.1.2` GitHub
+preview is ad-hoc and makes no TCC/Keychain-continuity claim. The first
+persistent self-signed identity build is `0.1.3-preview.1`; continuity is not
+claimed until a real update to a later preview proves it.
+
+Preview-update qualification also requires a replay test in which otherwise
+signature-verified archive bytes contain an older bundle version. OsaGuard must
+reject those bytes before stopping the watcher. Archive qualification covers
+compressed and expanded size limits, entry-count and path limits, duplicate or
+missing `Info.plist`, the exact bundle identifier, and the selected version.
 
 ## Universal watcher checks
 
@@ -204,11 +211,12 @@ This live gate must also confirm that setup status advances after the Tauri main
 process receives the new TCC grant. It must not be performed by automation with
 the user's real password.
 
-The public preview workflow builds an ad-hoc Apple-Silicon DMG and ZIP only on a
-GitHub-hosted runner, publishes an explicit prerelease with checksums and
-attestation, and requires a successful exact-main CI run. It uses no P12,
-Keychain import, updater secret, or Apple credential. That is evidence for a
-manual preview only, not a shippable stable identity.
+The public preview workflow builds on a GitHub-hosted runner, imports only the
+persistent self-signed preview P12 into a disposable Keychain, signs the app,
+and removes that Keychain. It also signs a Tauri updater archive with a separate
+persistent key, verifies the signature offline, and publishes exact-tag
+metadata, checksums, and attestations after successful exact-main CI. Neither
+identity is an Apple credential or a shippable stable identity.
 
 The remaining stable-channel gates are Developer ID signing, Apple notarization
 and stapling, a reviewed updater key and endpoint, a protected draft release,
@@ -217,4 +225,4 @@ canaries must cover native notification and tray fallback, explicit install
 confirmation, restart, offline and corrupted-payload failures, watcher recovery,
 and retained Accessibility/Keychain access before any password is re-saved. The
 exact stable procedure is in [Releasing OsaGuard](RELEASING.md); none of those
-gates is claimed by this ad-hoc preview qualification.
+gates is claimed by preview signing alone.

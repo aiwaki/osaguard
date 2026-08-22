@@ -6,6 +6,36 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.3-preview.1] - 2026-08-23
+
+### Added
+
+- the first updater-capable preview uses canonical prerelease SemVer, bounded
+  GitHub prerelease discovery, immutable tag-specific metadata, and Tauri's
+  separate minisign key for download verification.
+- preview releases use one persistent self-signed macOS code-signing identity
+  and verify its bundle identifier plus certificate-bound designated
+  requirement in the disposable release runner.
+- the menu now exposes a direct dynamic password action and a built-in
+  **Uninstall OsaGuard…** action immediately above Quit.
+
+### Changed
+
+- `0.1.2` must be replaced manually by this bridge build; later canonical
+  previews are designed for automatic discovery and still require explicit
+  install confirmation. A real preview-to-preview canary remains pending.
+- Apple Developer ID and notarization remain absent. They affect first-launch
+  trust, not the cryptographic updater channel.
+- the administrator password and protected state start in fresh v2 Keychain
+  namespaces. Pre-0.1.3 records are left untouched so inspection and uninstall
+  cannot trigger ownership prompts.
+- password changes update only a fully verified existing item value; Cancel is
+  a successful no-op and a failed write preserves the previous value.
+- updater archives are structurally checked against the selected bundle ID and
+  version before a transactional replacement that can restore the old app.
+- `README.md` is now the canonical English guide, with a complete Russian
+  translation in `README.ru.md`.
+
 ## [0.1.2-preview.1] - 2026-08-23
 
 ### Fixed
@@ -75,10 +105,11 @@ Withdrawn after local release-artifact qualification found a relaunch race.
   already running in the configured user account.
 - password input is kept outside Tauri JavaScript, command arguments, environment
   variables, logs, and the clipboard.
-- the earlier self-signed-P12 release experiment is retired. No public workflow
-  can access it; previews use GitHub-hosted ad-hoc bundles only.
+- stable releases remain closed until Developer ID and notarization are
+  available; preview signing is a separate self-signed continuity mechanism.
 
 [Unreleased]: https://github.com/aiwaki/osaguard/commits/main
+[0.1.3-preview.1]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.3-preview.1
 [0.1.2-preview.1]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.2-preview.1
 [0.1.1-preview.1]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.1-preview.1
 [0.1.0-preview.1]: https://github.com/aiwaki/osaguard/releases/tag/v0.1.0-preview.1

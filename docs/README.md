@@ -10,7 +10,9 @@ menu, update, uninstall, language, privacy, or security-warning behavior changes
 | [Qualification](QUALIFICATION.md) | Evidence already collected and live gates that remain external. |
 | [Releasing](RELEASING.md) | Public preview procedure and the separately closed stable channel. |
 
-OsaGuard has a manual Apple-Silicon preview channel. Preview builds are ad-hoc
-signed, are not notarized, and do not currently have automatic updates. The
-stable channel remains fail-closed until Developer ID signing, notarization, and
-stapling can be qualified.
+OsaGuard has an Apple-Silicon preview channel. Public previews use a persistent
+self-signed macOS identity and a separate signed Tauri updater channel, but are
+not Developer ID signed or notarized. `0.1.3-preview.1` is the one-time manual
+bridge; later previews can update only after explicit user confirmation. The
+stable channel remains fail-closed until Developer ID signing, notarization,
+and stapling can be qualified.

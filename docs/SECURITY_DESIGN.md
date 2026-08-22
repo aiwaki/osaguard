@@ -69,7 +69,7 @@ choose an executable path, watcher account, or native bridge operation.
   Cancel is a successful no-op, and a failed update leaves the previous secret
   intact instead of deleting it first.
 - User-requested password removal and uninstall delete every generic-password
-  item in OsaGuard's dedicated service that belongs to the current OsaGuard
+  item in OsaGuard's current v2 service that belongs to the current OsaGuard
   executable, not just the installed user's current account label. Each
   candidate must first prove the caller-only OsaGuard ACL; an ambiguous,
   poisoned, or differently trusted same-service item fails removal before any
@@ -79,10 +79,12 @@ choose an executable path, watcher account, or native bridge operation.
   removed.
 
 The current Keychain integration uses the file-based macOS Keychain with an
-explicit caller ACL. Public preview builds are ad-hoc signed and do not provide
-a cross-version identity guarantee. A future Apple-signed stable release must
-separately qualify TCC and Keychain continuity before it can claim retained
-setup. A future release may evaluate migration to the data-protection Keychain.
+explicit caller ACL. The manual `0.1.3-preview.1` bridge and later public
+previews use one persistent self-signed code-signing identity, but
+cross-version continuity remains unqualified until a real preview-to-preview
+update proves it. A future Apple-signed stable release must separately qualify
+TCC and Keychain continuity before it can claim retained setup. A future
+release may evaluate migration to the data-protection Keychain.
 
 ## Authorization-dialog checks
 
@@ -151,17 +153,28 @@ macOS requires a one-time user decision for Accessibility. OsaGuard cannot and
 must not approve itself. The installed Tauri main process makes the native trust
 request, and the statically linked watcher operates in that same app process.
 
-Source, ordinary CI, and public preview builds are ad-hoc signed and are not
-notarized. **Each ad-hoc rebuild can have a new code identity from TCC's
-perspective**, even when its bundle identifier and path are unchanged. Preview
-releases therefore make no continuity claim across versions; their updater is
-disabled and updates are manual. A self-signed certificate or locally trusted
-identity is not a substitute for Developer ID signing and notarization.
+Source and ordinary CI builds remain ad-hoc signed. Starting with the manual
+`0.1.3-preview.1` bridge, public previews use one persistent self-signed Code
+Signing identity so later versions can satisfy the same certificate- and
+identifier-bound code requirement. That identity does not provide Developer ID
+trust, Gatekeeper acceptance, notarization, or revocation.
 
-The source includes a Tauri updater implementation. It remains disabled for the
-current preview until a dedicated signed preview appcast and a real `N → N+1`
-continuity qualification exist. See [Releasing OsaGuard](RELEASING.md) for the
-preview and stable boundaries.
+The public certificate is pinned at
+`docs/release-signing/osaguard-preview-code-signing.pem`. The release runner
+requires the imported P12 certificate to match that file and its committed
+SHA-256/SHA-1 fingerprints byte-for-byte before signing, then verifies the
+bundle against the identifier-and-certificate designated requirement.
+
+Preview updater archives use a second persistent Tauri/minisign identity. A
+bounded GitHub prerelease query selects only an immutable exact-tag appcast and
+archive pair; its public key is pinned at
+`config/osaguard-preview-updater.pub`. Tauri verifies the archive signature,
+then OsaGuard bounds and inspects the tar stream and requires exactly one
+`OsaGuard.app/Contents/Info.plist` with the expected bundle identifier and the
+selected version before stopping the watcher or installing. The first real
+`0.1.3-preview.1 → 0.1.3-preview.2` transition remains required evidence for
+Accessibility and Keychain continuity. See [Releasing OsaGuard](RELEASING.md)
+for the preview and stable boundaries.
 
 ## Advanced exact-rule CLI (separate capability)
 

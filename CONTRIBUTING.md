@@ -23,14 +23,14 @@ make check
 make tray-build
 ```
 
-Local app bundles and the public preview are ad-hoc signed and not notarized.
-The public preview workflow is limited to a GitHub-hosted Apple-Silicon runner,
-manual installation, and an explicit prerelease. The stable binary workflow
-remains fail-closed until Apple-issued Developer ID signing, notarization, and
-stapling are available and qualified. Do not add a self-signed certificate,
-locally trusted identity, or automatic updater fallback. Use throwaway test data.
-Do not test with a real administrator password unless a specific local
-integration test requires it and you understand the cleanup.
+Local app bundles are ad-hoc signed. Public previews use a persistent
+self-signed macOS code-signing identity, but neither is notarized or trusted as
+Apple Developer ID. The preview updater has a second, independent persistent
+Tauri/minisign key; neither preview identity may be replaced casually. The
+stable binary workflow remains fail-closed until Apple-issued Developer ID
+signing, notarization, and stapling are available and qualified. Use throwaway
+test data. Do not test with a real administrator password unless a specific
+local integration test requires it and you understand the cleanup.
 
 ## Design rules
 
@@ -49,8 +49,9 @@ integration test requires it and you understand the cleanup.
   substitute for product UX.
 - Keep Russian and English strings in sync. Russian is selected for a Russian
   system locale; English is the fallback for every other locale.
-- Update the default Russian `README.md` and English `README.en.md` together for
-  every user-visible installation, menu, update, or uninstall change.
+- Update the default English `README.md` and full Russian `README.ru.md`
+  together for every user-visible installation, menu, update, or uninstall
+  change. Keep `README.en.md` as a compatibility redirect.
 
 ## Pull requests
 

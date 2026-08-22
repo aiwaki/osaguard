@@ -1,9 +1,14 @@
+mod preview_update;
+mod update_archive;
+
 use plist::Value;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -21,7 +26,7 @@ use tauri::{
 };
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_notification::NotificationExt;
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 #[cfg(target_os = "macos")]
 use trash::{
     macos::{DeleteMethod, TrashContextExtMacos},
@@ -65,6 +70,7 @@ const ACKNOWLEDGEMENT: &str = "I_UNDERSTAND_PASSWORDLESS_ADMIN";
 const REMOVE_PASSWORD_CONFIRMATION: &str = "REMOVE_SAVED_PASSWORD";
 const UNINSTALL_CONFIRMATION: &str = "UNINSTALL_OSAGUARD";
 const INSTALL_UPDATE_CONFIRMATION: &str = "INSTALL_SIGNED_UPDATE";
+const PREVIEW_CERT_SHA1: &str = "894700CBB7D156943C872AFAB16ED609CA1F43E4";
 
 const ID_OPEN: &str = "open";
 const ID_TOGGLE: &str = "toggle";
@@ -166,10 +172,10 @@ impl Locale {
         }
     }
 
-    fn resave_password(self) -> &'static str {
+    fn resolve_password_conflict(self) -> &'static str {
         match self {
-            Self::En => "Re-save administrator password…",
-            Self::Ru => "Сохранить пароль заново…",
+            Self::En => "Resolve Keychain conflict…",
+            Self::Ru => "Устранить конфликт Связки ключей…",
         }
     }
 
@@ -1140,21 +1146,26 @@ fn stop_all_watchers(app: &AppHandle, user: &UserInfo) -> Result<(), String> {
 }
 
 fn updater_configured(app: &AppHandle) -> bool {
-    app.config()
+    let Some(config) = app
+        .config()
         .plugins
         .0
         .get("updater")
         .and_then(|value| value.as_object())
-        .is_some_and(|config| {
-            config
-                .get("pubkey")
-                .and_then(|value| value.as_str())
-                .is_some_and(|value| !value.trim().is_empty())
-                && config
-                    .get("endpoints")
-                    .and_then(|value| value.as_array())
-                    .is_some_and(|value| !value.is_empty())
-        })
+    else {
+        return false;
+    };
+    let public_key_configured = config
+        .get("pubkey")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| !value.trim().is_empty());
+    let static_endpoint_configured = config
+        .get("endpoints")
+        .and_then(|value| value.as_array())
+        .is_some_and(|value| !value.is_empty());
+    public_key_configured
+        && (static_endpoint_configured
+            || preview_update::is_preview_version(&app.package_info().version))
 }
 
 fn current_update_status(app: &AppHandle) -> UpdateStatus {
@@ -1279,7 +1290,7 @@ fn refresh_menu(app: &AppHandle) {
         .unwrap_or(KeychainItemState::Missing);
     let _ = handles.password.set_text(match password_state {
         KeychainItemState::Ready => locale.change_password(),
-        KeychainItemState::NeedsReenrollment => locale.resave_password(),
+        KeychainItemState::NeedsReenrollment => locale.resolve_password_conflict(),
         KeychainItemState::Missing => locale.save_password(),
     });
     let _ = handles.password.set_enabled(password_enabled);
@@ -1416,6 +1427,11 @@ async fn store_password_inner(app: AppHandle) -> Result<PasswordActionResult, St
     if !initial.accessibility_granted {
         return Err("Accessibility permission is required before saving a password".into());
     }
+    if initial.password_state == KeychainItemState::NeedsReenrollment {
+        return Err(
+            "resolve the conflicting OsaGuard Keychain item before saving a password".into(),
+        );
+    }
     let locale = Locale::system().code();
     let user = current_user()?;
     let account = user.account;
@@ -1519,23 +1535,50 @@ fn verify_bundle(path: &Path) -> Result<(), String> {
     }
 }
 
-fn parse_bundle_version(value: &str) -> Result<[u64; 3], String> {
-    let parts = value
-        .split('.')
-        .map(|part| {
-            if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err("application version must contain three numeric components".into());
-            }
-            part.parse::<u64>()
-                .map_err(|_| "application version component is too large".to_owned())
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    parts
-        .try_into()
-        .map_err(|_| "application version must contain three numeric components".into())
+fn preview_code_requirement() -> String {
+    format!("identifier \"dev.aiwaki.osaguard\" and certificate leaf = H\"{PREVIEW_CERT_SHA1}\"")
 }
 
-fn bundle_version(path: &Path) -> Result<[u64; 3], String> {
+fn verify_preview_update_bundle(path: &Path, expected_version: &str) -> Result<(), String> {
+    verify_bundle(path)?;
+    let expected = parse_bundle_version(expected_version)?;
+    let actual = bundle_version(path)?;
+    if actual != expected {
+        return Err(format!(
+            "application bundle version mismatch: expected {expected}, found {actual}"
+        ));
+    }
+
+    let output = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict", "--verbose=2"])
+        .arg(format!("-R={}", preview_code_requirement()))
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| format!("verify pinned preview signature: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(output_error(
+            "application does not satisfy the pinned OsaGuard preview requirement",
+            &output,
+        ))
+    }
+}
+
+fn parse_bundle_version(value: &str) -> Result<Version, String> {
+    let version = Version::parse(value).map_err(|_| "application version is invalid".to_owned())?;
+    if !version.build.is_empty()
+        || (!version.pre.is_empty() && !preview_update::is_preview_version(&version))
+    {
+        return Err("application version is not a supported stable or preview version".into());
+    }
+    Ok(version)
+}
+
+fn bundle_version(path: &Path) -> Result<Version, String> {
     let info = Value::from_file(path.join("Contents/Info.plist"))
         .map_err(|error| format!("read application Info.plist: {error}"))?;
     let version = info
@@ -1546,7 +1589,7 @@ fn bundle_version(path: &Path) -> Result<[u64; 3], String> {
     parse_bundle_version(version)
 }
 
-fn install_action_for_versions(source: [u64; 3], destination: Option<[u64; 3]>) -> InstallAction {
+fn install_action_for_versions(source: Version, destination: Option<Version>) -> InstallAction {
     match destination {
         None => InstallAction::Install,
         Some(destination) if source > destination => InstallAction::Update,
@@ -1596,6 +1639,102 @@ fn schedule_open_application(path: &Path) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("schedule installed application relaunch: {error}"))
+}
+
+#[derive(Debug)]
+struct ApplicationReplacementError {
+    message: String,
+    preserve_staging: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn swap_application_bundles(left: &Path, right: &Path) -> Result<(), String> {
+    for (label, path) in [("staged", left), ("installed", right)] {
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("inspect {label} application before replacement: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!(
+                "{label} application must be a real directory before replacement"
+            ));
+        }
+    }
+
+    let left = CString::new(left.as_os_str().as_bytes())
+        .map_err(|_| "staged application path contains a NUL byte")?;
+    let right = CString::new(right.as_os_str().as_bytes())
+        .map_err(|_| "installed application path contains a NUL byte")?;
+    let result = unsafe {
+        // SAFETY: both C strings remain live for the call and point to
+        // preflighted directories on the same /Applications filesystem.
+        libc::renamex_np(left.as_ptr(), right.as_ptr(), libc::RENAME_SWAP)
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "atomically swap OsaGuard application bundles: {}",
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn swap_application_bundles(_left: &Path, _right: &Path) -> Result<(), String> {
+    Err("atomic application replacement is only available on macOS".into())
+}
+
+fn rollback_application_replacement(
+    candidate: &Path,
+    destination: &Path,
+    failure: String,
+) -> ApplicationReplacementError {
+    match swap_application_bundles(candidate, destination) {
+        Ok(()) => ApplicationReplacementError {
+            message: failure,
+            preserve_staging: false,
+        },
+        Err(rollback) => ApplicationReplacementError {
+            message: format!(
+                "{failure}; rollback failed: {rollback}; the previous OsaGuard bundle remains recoverable at {}",
+                candidate.display()
+            ),
+            preserve_staging: true,
+        },
+    }
+}
+
+fn replace_application_bundle_transactional<V, R>(
+    candidate: &Path,
+    destination: &Path,
+    verify_installed: V,
+    schedule_relaunch: R,
+) -> Result<(), ApplicationReplacementError>
+where
+    V: FnOnce(&Path) -> Result<(), String>,
+    R: FnOnce(&Path) -> Result<(), String>,
+{
+    swap_application_bundles(candidate, destination).map_err(|message| {
+        ApplicationReplacementError {
+            message,
+            preserve_staging: false,
+        }
+    })?;
+
+    if let Err(error) = verify_installed(destination) {
+        return Err(rollback_application_replacement(
+            candidate,
+            destination,
+            format!("verify installed update after replacement: {error}"),
+        ));
+    }
+    if let Err(error) = schedule_relaunch(destination) {
+        return Err(rollback_application_replacement(
+            candidate,
+            destination,
+            error,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1957,10 +2096,8 @@ async fn uninstall_app(app: AppHandle, acknowledgement: String) -> Result<(), St
         .autolaunch()
         .is_enabled()
         .map_err(|error| format!("inspect OsaGuard login item: {error}"))?;
-    let watcher_should_restore = watcher_running(&app).unwrap_or(false)
-        || protected_state()
-            .map(|state| state == ProtectedState::Enabled)
-            .unwrap_or(false);
+    let watcher_should_restore =
+        watcher_running(&app).unwrap_or(false) || protected_before == ProtectedState::Enabled;
 
     if autostart_was_enabled {
         app.autolaunch()
@@ -1977,15 +2114,34 @@ async fn uninstall_app(app: AppHandle, acknowledgement: String) -> Result<(), St
 
     let mut staged_support = false;
     let mut trashed_app: Option<PathBuf> = None;
+    let mut password_deleted = false;
     let transaction = (|| {
         stage_support_removal(&support_plan)?;
         staged_support = support_plan.existed;
-        let trashed = move_installed_app_to_trash(&trash_plan)?;
-        trashed_app = Some(trashed);
+
+        // Prove that this bundle can make the round trip through Trash before
+        // deleting anything from Keychain. Restoring it first also preserves
+        // the installed path used by the caller-only ACL while v2 items are
+        // deleted below.
+        let preflight_trashed = move_installed_app_to_trash(&trash_plan)?;
+        trashed_app = Some(preflight_trashed);
+        restore_app_from_trash(
+            trashed_app
+                .as_deref()
+                .ok_or("lost the preflight Trash location")?,
+            &trash_plan,
+        )?;
+        trashed_app = None;
+        verify_bundle(Path::new(INSTALLED_APP))?;
+
         finish_support_removal(&support_plan)?;
         staged_support = false;
         delete_protected_state()?;
         password_delete_all()?;
+        password_deleted = true;
+
+        let final_trashed = move_installed_app_to_trash(&trash_plan)?;
+        trashed_app = Some(final_trashed);
         Ok(())
     })();
 
@@ -2006,22 +2162,39 @@ async fn uninstall_app(app: AppHandle, acknowledgement: String) -> Result<(), St
                 rollback_errors.push(rollback);
             }
         }
-        if autostart_was_enabled {
-            if let Err(rollback) = app.autolaunch().enable() {
-                rollback_errors.push(format!("restore OsaGuard at login: {rollback}"));
+        // The saved password cannot be reconstructed after a successful
+        // deletion. If the final Trash move races with another filesystem
+        // change, restore the bundle and settings but leave automatic mode
+        // fail-closed instead of re-enabling a configuration without a
+        // password.
+        if !password_deleted {
+            if autostart_was_enabled {
+                if let Err(rollback) = app.autolaunch().enable() {
+                    rollback_errors.push(format!("restore OsaGuard at login: {rollback}"));
+                }
+            }
+            if let Err(rollback) = set_protected_state(protected_before) {
+                rollback_errors.push(format!("restore protected OsaGuard state: {rollback}"));
+            }
+            if let Err(rollback) = restore_watcher(&app, &user, watcher_should_restore) {
+                rollback_errors.push(rollback);
             }
         }
-        if let Err(rollback) = set_protected_state(protected_before) {
-            rollback_errors.push(format!("restore protected OsaGuard state: {rollback}"));
-        }
-        if let Err(rollback) = restore_watcher(&app, &user, watcher_should_restore) {
-            rollback_errors.push(rollback);
-        }
+
+        let irreversible_note = password_deleted.then_some(
+            "the saved password was already removed, so automatic confirmation remains disabled",
+        );
         if rollback_errors.is_empty() {
-            return Err(error);
+            return Err(match irreversible_note {
+                Some(note) => format!("{error}; {note}"),
+                None => error,
+            });
         }
+        let note = irreversible_note
+            .map(|note| format!("; {note}"))
+            .unwrap_or_default();
         return Err(format!(
-            "{error}; uninstall rollback also failed: {}",
+            "{error}{note}; uninstall rollback also failed: {}",
             rollback_errors.join("; ")
         ));
     }
@@ -2074,6 +2247,70 @@ fn maybe_notify_update_available(app: &AppHandle, version: &str) {
     }
 }
 
+fn validate_preview_update(
+    current: &semver::Version,
+    release: &preview_update::PreviewRelease,
+    update: &Update,
+) -> Result<(), String> {
+    validate_preview_update_metadata(
+        current,
+        release,
+        &update.current_version,
+        &update.version,
+        update.download_url.as_str(),
+    )
+}
+
+fn validate_preview_update_metadata(
+    current: &Version,
+    release: &preview_update::PreviewRelease,
+    update_current: &str,
+    update_version: &str,
+    archive_url: &str,
+) -> Result<(), String> {
+    if update_current != current.to_string() {
+        return Err("updater current version mismatch".into());
+    }
+    if update_version != release.version.to_string() || archive_url != release.archive_url {
+        return Err("preview updater metadata escaped its immutable tag".into());
+    }
+    Ok(())
+}
+
+async fn checked_update(app: &AppHandle) -> Result<Option<Update>, String> {
+    let current = app.package_info().version.clone();
+    if preview_update::is_preview_version(&current) {
+        let Some(release) = preview_update::discover_preview_release(&current).await? else {
+            return Ok(None);
+        };
+        let endpoint = release
+            .appcast_url
+            .parse()
+            .map_err(|_| "invalid immutable updater endpoint".to_string())?;
+        let updater = app
+            .updater_builder()
+            .timeout(preview_update::DISCOVERY_TIMEOUT)
+            .endpoints(vec![endpoint])
+            .map_err(|error| format!("updater endpoint rejected: {error}"))?
+            .build()
+            .map_err(|error| format!("initialize updater: {error}"))?;
+        let update = updater
+            .check()
+            .await
+            .map_err(|error| format!("check for updates: {error}"))?;
+        if let Some(update) = &update {
+            validate_preview_update(&current, &release, update)?;
+        }
+        return Ok(update);
+    }
+
+    app.updater()
+        .map_err(|error| format!("initialize updater: {error}"))?
+        .check()
+        .await
+        .map_err(|error| format!("check for updates: {error}"))
+}
+
 async fn check_updates_inner(app: &AppHandle) -> Result<UpdateStatus, String> {
     if !updater_configured(app) {
         let status = UpdateStatus::default();
@@ -2093,15 +2330,7 @@ async fn check_updates_inner(app: &AppHandle) -> Result<UpdateStatus, String> {
         return Ok(current_update_status(app));
     };
     set_update_status(app, UpdateStatus::configured(UpdatePhase::Checking));
-    let updater = match app.updater() {
-        Ok(updater) => updater,
-        Err(error) => {
-            let status = UpdateStatus::error("unavailable", None);
-            set_update_status(app, status);
-            return Err(format!("initialize updater: {error}"));
-        }
-    };
-    match updater.check().await {
+    match checked_update(app).await {
         Ok(Some(update)) => {
             let version = update.version.clone();
             let status = UpdateStatus::available(UpdatePhase::Available, version.clone());
@@ -2119,7 +2348,7 @@ async fn check_updates_inner(app: &AppHandle) -> Result<UpdateStatus, String> {
         Err(error) => {
             let status = UpdateStatus::error("check_failed", None);
             set_update_status(app, status);
-            Err(format!("check for updates: {error}"))
+            Err(error)
         }
     }
 }
@@ -2229,11 +2458,7 @@ async fn install_update(
         return Err("OsaGuard is busy with another protected operation".into());
     };
     set_update_status(&app, UpdateStatus::configured(UpdatePhase::Checking));
-    let updater = app.updater().map_err(|error| {
-        set_update_status(&app, UpdateStatus::error("unavailable", None));
-        format!("initialize updater: {error}")
-    })?;
-    let Some(update) = updater.check().await.map_err(|error| {
+    let Some(mut update) = checked_update(&app).await.map_err(|error| {
         set_update_status(&app, UpdateStatus::error("check_failed", None));
         format!("check for update before installation: {error}")
     })?
@@ -2259,12 +2484,48 @@ async fn install_update(
         &app,
         UpdateStatus::available(UpdatePhase::Downloading, version.clone()),
     );
+    // Metadata checks stay tightly bounded, while the signed archive gets a
+    // separate budget that is practical on slower connections.
+    update.timeout = Some(preview_update::UPDATE_DOWNLOAD_TIMEOUT);
     let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| {
         set_update_status(
             &app,
             UpdateStatus::error("download_failed", Some(version.clone())),
         );
         format!("download and verify update: {error}")
+    })?;
+    let staging = tempfile::Builder::new()
+        .prefix(".OsaGuard-update-")
+        .tempdir_in("/Applications")
+        .map_err(|error| {
+            set_update_status(
+                &app,
+                UpdateStatus::error("install_failed", Some(version.clone())),
+            );
+            format!("create private update staging directory: {error}")
+        })?;
+    let candidate = update_archive::extract_update_archive(&bytes, &version, staging.path())
+        .map_err(|error| {
+            set_update_status(
+                &app,
+                UpdateStatus::error("archive_invalid", Some(version.clone())),
+            );
+            format!("inspect and extract verified update archive: {error}")
+        })?;
+    verify_preview_update_bundle(&candidate, &version).map_err(|error| {
+        set_update_status(
+            &app,
+            UpdateStatus::error("archive_invalid", Some(version.clone())),
+        );
+        format!("verify extracted update bundle: {error}")
+    })?;
+    let current_version = app.package_info().version.to_string();
+    verify_preview_update_bundle(Path::new(INSTALLED_APP), &current_version).map_err(|error| {
+        set_update_status(
+            &app,
+            UpdateStatus::error("install_failed", Some(version.clone())),
+        );
+        format!("verify installed OsaGuard before replacement: {error}")
     })?;
     set_update_status(
         &app,
@@ -2340,7 +2601,24 @@ async fn install_update(
         &app,
         UpdateStatus::available(UpdatePhase::Installing, version.clone()),
     );
-    if let Err(error) = update.install(bytes) {
+    // Persist the private staging directory before the atomic exchange. Once
+    // exchanged, it contains the previous application and must survive a
+    // failed rollback instead of being deleted by TempDir's destructor.
+    let staging_path = staging.keep();
+    if let Err(error) = replace_application_bundle_transactional(
+        &candidate,
+        Path::new(INSTALLED_APP),
+        |installed| verify_preview_update_bundle(installed, &version),
+        schedule_open_application,
+    ) {
+        if !error.preserve_staging {
+            if let Err(cleanup) = fs::remove_dir_all(&staging_path) {
+                eprintln!(
+                    "OsaGuard update failed and its staging directory could not be removed at {}: {cleanup}",
+                    staging_path.display()
+                );
+            }
+        }
         let restore = restore_watcher(&app, &user, should_restore);
         let code = if restore.is_err() {
             "watcher_restore_failed"
@@ -2348,16 +2626,34 @@ async fn install_update(
             "install_failed"
         };
         set_update_status(&app, UpdateStatus::error(code, Some(version.clone())));
-        return Err(format!("install verified update: {error}"));
+        return Err(format!("install verified update: {}", error.message));
+    }
+    if let Err(error) = move_replaced_bundle_to_trash(&candidate) {
+        eprintln!(
+            "OsaGuard update succeeded but the recoverable previous bundle remains at {}: {error}",
+            candidate.display()
+        );
+    } else if let Err(error) = fs::remove_dir_all(&staging_path) {
+        eprintln!(
+            "OsaGuard update succeeded but its empty staging directory remains at {}: {error}",
+            staging_path.display()
+        );
     }
     lifecycle.begin_shutdown();
-    app.restart();
+    app.exit(0);
+    Ok(UpdateStatus::available(UpdatePhase::Installing, version))
 }
 
 fn handle_menu(app: &AppHandle, id: &str) {
     match id {
         ID_OPEN => show_main_window(app),
         ID_PASSWORD => {
+            if compute_status(app)
+                .is_ok_and(|status| status.password_state == KeychainItemState::NeedsReenrollment)
+            {
+                show_main_window(app);
+                return;
+            }
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
                 if store_password_inner(app.clone()).await.is_err() {
@@ -2582,6 +2878,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
         os::fd::AsRawFd,
         path::Path,
         sync::{
@@ -2595,11 +2892,14 @@ mod tests {
     use super::{
         app_bundle_path, decode_accessibility_request_result, decode_password_state,
         decode_protected_state, install_action_for_versions, installed_application_path,
-        native_c_string, parse_bundle_version, update_ready_with_error,
-        validate_update_install_request, InstallAction, KeychainItemState, LifecycleCoordinator,
-        LifecycleOperation, LifecyclePhase, OperationGate, ProtectedState, UpdatePhase,
-        UpdateStatus, WatcherProcess, INSTALL_UPDATE_CONFIRMATION,
+        native_c_string, parse_bundle_version, preview_code_requirement,
+        replace_application_bundle_transactional, update_ready_with_error,
+        validate_preview_update_metadata, validate_update_install_request, InstallAction,
+        KeychainItemState, LifecycleCoordinator, LifecycleOperation, LifecyclePhase, OperationGate,
+        ProtectedState, UpdatePhase, UpdateStatus, WatcherProcess, INSTALL_UPDATE_CONFIRMATION,
+        PREVIEW_CERT_SHA1,
     };
+    use semver::Version;
 
     #[test]
     fn decodes_native_accessibility_request_status() {
@@ -2677,6 +2977,75 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_keeps_installed_identity_until_v2_keychain_cleanup() {
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("async fn uninstall_app")
+            .expect("uninstall command is present");
+        let end = source[start..]
+            .find("fn maybe_notify_update_available")
+            .map(|offset| start + offset)
+            .expect("next function bounds the uninstall command");
+        let uninstall = &source[start..end];
+
+        let move_calls: Vec<_> = uninstall
+            .match_indices("move_installed_app_to_trash(&trash_plan)?")
+            .map(|(offset, _)| offset)
+            .collect();
+        assert_eq!(move_calls.len(), 2, "preflight and final Trash moves");
+
+        let restore = uninstall
+            .find("restore_app_from_trash(")
+            .expect("preflight restores the app");
+        let restored_verify = uninstall[restore..]
+            .find("verify_bundle(Path::new(INSTALLED_APP))?;")
+            .map(|offset| restore + offset)
+            .expect("restored app identity is re-verified");
+        let protected_delete = uninstall
+            .find("delete_protected_state()?;")
+            .expect("protected v2 state is deleted");
+        let password_delete = uninstall
+            .find("password_delete_all()?;")
+            .expect("password v2 state is deleted");
+        let irreversible_boundary = uninstall
+            .find("password_deleted = true;")
+            .expect("irreversible deletion is tracked");
+
+        assert!(move_calls[0] < restore);
+        assert!(restore < restored_verify);
+        assert!(restored_verify < protected_delete);
+        assert!(protected_delete < password_delete);
+        assert!(password_delete < irreversible_boundary);
+        assert!(irreversible_boundary < move_calls[1]);
+        assert!(uninstall.contains("if !password_deleted {"));
+        assert!(uninstall.contains("protected_before == ProtectedState::Enabled"));
+        assert!(
+            !uninstall.contains("|| protected_state()"),
+            "the watcher rollback decision must reuse the preflight Keychain snapshot"
+        );
+    }
+
+    #[test]
+    fn password_conflict_is_rejected_before_the_native_prompt() {
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("async fn store_password_inner")
+            .expect("password command is present");
+        let end = source[start..]
+            .find("#[tauri::command]\nasync fn store_password")
+            .map(|offset| start + offset)
+            .expect("password command wrapper bounds the implementation");
+        let implementation = &source[start..end];
+        let conflict = implementation
+            .find("initial.password_state == KeychainItemState::NeedsReenrollment")
+            .expect("Keychain conflict preflight is present");
+        let prompt = implementation
+            .find("spawn_blocking(move || password_prompt_and_store")
+            .expect("native password prompt is present");
+        assert!(conflict < prompt);
+    }
+
+    #[test]
     fn update_install_requires_the_canonical_app_version_and_acknowledgement() {
         assert_eq!(
             validate_update_install_request(true, "1.2.3", "1.2.3", INSTALL_UPDATE_CONFIRMATION),
@@ -2697,6 +3066,75 @@ mod tests {
     }
 
     #[test]
+    fn preview_update_requirement_pins_the_release_certificate() {
+        assert_eq!(
+            preview_code_requirement(),
+            format!(
+                "identifier \"dev.aiwaki.osaguard\" and certificate leaf = H\"{PREVIEW_CERT_SHA1}\""
+            )
+        );
+    }
+
+    #[test]
+    fn updater_does_not_delegate_application_replacement_to_tauri() {
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("async fn install_update")
+            .expect("update installer is present");
+        let end = source[start..]
+            .find("\nfn handle_menu")
+            .map(|offset| start + offset)
+            .expect("menu handler bounds the update installer");
+        let installer = &source[start..end];
+
+        assert!(!installer.contains("update.install("));
+        assert!(installer.contains("replace_application_bundle_transactional("));
+        assert!(installer.contains("restore_watcher(&app, &user, should_restore)"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_post_swap_verification_restores_the_previous_application() {
+        let temporary = tempfile::tempdir().expect("create replacement test directory");
+        let candidate = temporary.path().join("candidate.app");
+        let destination = temporary.path().join("installed.app");
+        fs::create_dir(&candidate).expect("create candidate");
+        fs::create_dir(&destination).expect("create installed application");
+        fs::write(candidate.join("identity"), b"new").expect("mark candidate");
+        fs::write(destination.join("identity"), b"old").expect("mark installed application");
+
+        let error = replace_application_bundle_transactional(
+            &candidate,
+            &destination,
+            |_| Err("forced verification failure".into()),
+            |_| panic!("relaunch must not be scheduled after failed verification"),
+        )
+        .expect_err("replacement must fail");
+
+        assert!(!error.preserve_staging);
+        assert_eq!(fs::read(destination.join("identity")).unwrap(), b"old");
+        assert_eq!(fs::read(candidate.join("identity")).unwrap(), b"new");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn successful_transaction_keeps_the_previous_application_recoverable() {
+        let temporary = tempfile::tempdir().expect("create replacement test directory");
+        let candidate = temporary.path().join("candidate.app");
+        let destination = temporary.path().join("installed.app");
+        fs::create_dir(&candidate).expect("create candidate");
+        fs::create_dir(&destination).expect("create installed application");
+        fs::write(candidate.join("identity"), b"new").expect("mark candidate");
+        fs::write(destination.join("identity"), b"old").expect("mark installed application");
+
+        replace_application_bundle_transactional(&candidate, &destination, |_| Ok(()), |_| Ok(()))
+            .expect("replace application");
+
+        assert_eq!(fs::read(destination.join("identity")).unwrap(), b"new");
+        assert_eq!(fs::read(candidate.join("identity")).unwrap(), b"old");
+    }
+
+    #[test]
     fn typed_update_status_serializes_for_the_webview_contract() {
         let status = UpdateStatus::available(UpdatePhase::Available, "1.2.3");
         assert_eq!(
@@ -2711,6 +3149,42 @@ mod tests {
         let blocked = update_ready_with_error("1.2.3", "auth_dialog_active");
         assert_eq!(blocked.phase, UpdatePhase::Ready);
         assert_eq!(blocked.error_code.as_deref(), Some("auth_dialog_active"));
+    }
+
+    #[test]
+    fn preview_update_metadata_stays_bound_to_the_selected_tag() {
+        let current = Version::parse("0.1.3-preview.1").unwrap();
+        let release = crate::preview_update::PreviewRelease {
+            version: Version::parse("0.1.3-preview.2").unwrap(),
+            appcast_url: "https://github.com/aiwaki/osaguard/releases/download/v0.1.3-preview.2/latest.json".into(),
+            archive_url: "https://github.com/aiwaki/osaguard/releases/download/v0.1.3-preview.2/OsaGuard.app.tar.gz".into(),
+        };
+        assert_eq!(
+            validate_preview_update_metadata(
+                &current,
+                &release,
+                "0.1.3-preview.1",
+                "0.1.3-preview.2",
+                &release.archive_url,
+            ),
+            Ok(())
+        );
+        assert!(validate_preview_update_metadata(
+            &current,
+            &release,
+            "0.1.3-preview.1",
+            "0.1.3-preview.3",
+            &release.archive_url,
+        )
+        .is_err());
+        assert!(validate_preview_update_metadata(
+            &current,
+            &release,
+            "0.1.3-preview.1",
+            "0.1.3-preview.2",
+            "https://github.com/aiwaki/osaguard/releases/download/v0.1.3-preview.3/OsaGuard.app.tar.gz",
+        )
+        .is_err());
     }
 
     #[test]
@@ -2741,31 +3215,51 @@ mod tests {
     }
 
     #[test]
-    fn compares_strict_three_component_bundle_versions() {
-        assert_eq!(parse_bundle_version("0.1.1"), Ok([0, 1, 1]));
+    fn compares_stable_and_preview_bundle_versions() {
+        assert_eq!(
+            parse_bundle_version("0.1.1"),
+            Ok(Version::parse("0.1.1").unwrap())
+        );
         assert!(parse_bundle_version("0.1").is_err());
-        assert!(parse_bundle_version("0.1.1-preview.1").is_err());
-        assert!(parse_bundle_version("0.01.1").is_ok());
+        assert!(parse_bundle_version("0.1.1-preview.1").is_ok());
+        assert!(parse_bundle_version("0.1.1-beta.1").is_err());
+        assert!(parse_bundle_version("0.01.1").is_err());
         assert!(parse_bundle_version("0.1.1.0").is_err());
-        assert!([0, 1, 1] > [0, 1, 0]);
+        assert!(
+            parse_bundle_version("0.1.3-preview.1").unwrap()
+                > parse_bundle_version("0.1.2").unwrap()
+        );
+        assert!(
+            parse_bundle_version("0.1.3-preview.2").unwrap()
+                > parse_bundle_version("0.1.3-preview.1").unwrap()
+        );
     }
 
     #[test]
     fn install_action_matches_the_non_downgrading_installer() {
         assert_eq!(
-            install_action_for_versions([0, 1, 2], None),
+            install_action_for_versions(Version::parse("0.1.3-preview.1").unwrap(), None),
             InstallAction::Install
         );
         assert_eq!(
-            install_action_for_versions([0, 1, 2], Some([0, 1, 1])),
+            install_action_for_versions(
+                Version::parse("0.1.3-preview.1").unwrap(),
+                Some(Version::parse("0.1.2").unwrap())
+            ),
             InstallAction::Update
         );
         assert_eq!(
-            install_action_for_versions([0, 1, 2], Some([0, 1, 2])),
+            install_action_for_versions(
+                Version::parse("0.1.3-preview.1").unwrap(),
+                Some(Version::parse("0.1.3-preview.1").unwrap())
+            ),
             InstallAction::OpenInstalled
         );
         assert_eq!(
-            install_action_for_versions([0, 1, 2], Some([0, 1, 3])),
+            install_action_for_versions(
+                Version::parse("0.1.3-preview.1").unwrap(),
+                Some(Version::parse("0.1.3-preview.2").unwrap())
+            ),
             InstallAction::OpenNewerInstalled
         );
         assert_eq!(

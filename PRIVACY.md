@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated: 2026-08-13
+Last updated: 2026-08-23
 
 OsaGuard is designed as a local macOS utility. It does not require an OsaGuard
 account or cloud service.
@@ -15,8 +15,8 @@ OsaGuard handles the following local data:
   intentionally write the plaintext password to files, logs, command arguments,
   environment variables, or the clipboard.
 - **Settings and status.** OsaGuard may store preferences such as whether it
-  starts at login, whether automatic handling is paused, and whether onboarding
-  is complete.
+  starts at login, whether automatic handling is paused, whether onboarding is
+  complete, and the last update version for which it showed a notification.
 - **Local operational information.** The app may keep non-secret diagnostic
   information needed to explain setup or failures. It must not include the
   password or password-field contents.
@@ -41,12 +41,11 @@ behavior from OsaGuard or macOS Login Items settings.
 OsaGuard does not include analytics, advertising, telemetry, cloud password
 storage, or cloud synchronization.
 
-The first public preview does not contact GitHub for updates: its updater is
-disabled and later previews are installed manually. A future signed updater
-channel would contact GitHub Releases to check metadata and, only after your
-approval, download a package. GitHub may then receive normal connection
-information such as your IP address and user agent; GitHub's own privacy terms
-apply.
+Updater-capable previews contact the public GitHub API and GitHub Releases about
+15 seconds after launch and then every six hours to check signed release
+metadata. OsaGuard downloads an update package only after you explicitly choose
+to install it. GitHub may receive normal connection information such as your IP
+address and the `OsaGuard-Updater` user agent; GitHub's own privacy terms apply.
 
 OsaGuard itself does not upload prompts, passwords, application lists, or usage
 history.
@@ -59,10 +58,13 @@ OsaGuard Keychain item. Revoking Accessibility stops access to authorization UI
 but does not by itself delete the Keychain item.
 
 For a complete uninstall, choose **Uninstall OsaGuard…** in the menu and confirm.
-OsaGuard stops its watcher, disables launch at login, deletes its Keychain item
-and local settings, resets its Accessibility permission, and moves the app to
-the Trash. The app remains recoverable until the Trash is emptied, but its
-deleted secret and settings are not restored with it.
+OsaGuard stops its watcher, disables launch at login, deletes current v2
+Keychain records it can verify, removes local settings, resets its Accessibility
+permission, and moves the app to the Trash. To avoid macOS ownership prompts,
+the built-in uninstaller intentionally leaves unversioned records created by
+previews before 0.1.3. Their optional manual cleanup is documented in the
+[README](README.md#uninstall). The app remains recoverable until the Trash is
+emptied, but data removed by the uninstaller is not restored with it.
 
 ## Changes and questions
 

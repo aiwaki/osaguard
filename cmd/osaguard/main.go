@@ -33,7 +33,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "0.1.2"
+const version = "0.1.3-preview.1"
 
 func main() {
 	// AppKit password enrollment must run on the primordial macOS UI thread.

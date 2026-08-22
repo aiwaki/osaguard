@@ -68,8 +68,8 @@ const copy = {
       "Opens a native protected field. The password is stored only in Keychain on this Mac; it is never shown, copied, logged or sent.",
     passwordButton: "Enter password once",
     passwordReenrollmentCopy:
-      "This preview has a different local signing identity, so macOS will not let it use the earlier Keychain item. Enter the password again to replace that value with caller-only access for this copy.",
-    passwordReenrollmentButton: "Re-save password",
+      "The current OsaGuard Keychain item has an unrecognized access rule. OsaGuard will not read or replace it automatically. Remove the conflicting item in Keychain Access before saving again.",
+    passwordReenrollmentButton: "Remove conflict first",
     automaticTitle: "Confirm automatic mode",
     automaticCopy:
       "Review the serious security trade-off before enabling automatic confirmation. Once enabled, it works without later clicks.",
@@ -126,7 +126,10 @@ const copy = {
       "Couldn’t confirm that the administrator prompt is closed",
     updateCheckFailed: "Couldn’t check for updates",
     updateDownloadFailed: "Couldn’t download the update",
+    updateArchiveInvalid: "The downloaded update failed validation",
     updateInstallFailed: "Couldn’t install the update",
+    updateUserUnavailable: "Couldn’t determine the current macOS user",
+    updateConfirmationRequired: "Confirm the update again before installing it",
     updateWatcherStopFailed: "Couldn’t pause automatic confirmation for the update",
     updateWatcherRestoreFailed:
       "The update failed and automatic confirmation could not be resumed",
@@ -147,7 +150,7 @@ const copy = {
     updateConfirm: "Install and restart",
     uninstallTitle: "Uninstall OsaGuard?",
     uninstallBody:
-      "Automatic confirmation and launch at login will stop. OsaGuard will remove its verified Keychain password items and settings, reset its Accessibility entry, and move the app to Trash. The app can be recovered until Trash is emptied.",
+      "Automatic confirmation and launch at login will stop. OsaGuard will remove only the current v2 Keychain records it can verify, delete its settings, reset its Accessibility entry, and move the app to Trash. Records created by previews before 0.1.3 are intentionally left untouched to avoid macOS ownership prompts. Optional cleanup: in Keychain Access, delete old OsaGuard entries named exactly “OsaGuard administrator password” and “OsaGuard protected product state.” The app bundle can be recovered until Trash is emptied, but removed v2 data cannot.",
     uninstallConfirm: "Uninstall and move to Trash",
     uninstallError: "Couldn’t uninstall OsaGuard.",
     accessFollowup:
@@ -226,8 +229,8 @@ const copy = {
       "Откроется нативное защищённое поле. Пароль хранится только в Связке ключей на этом Mac; он не показывается, не копируется, не попадает в логи и никуда не отправляется.",
     passwordButton: "Один раз ввести пароль",
     passwordReenrollmentCopy:
-      "У этой preview-сборки другая локальная подпись, поэтому macOS не даёт ей использовать прежний объект Связки ключей. Введите пароль ещё раз: OsaGuard заменит значение и ограничит доступ текущим приложением.",
-    passwordReenrollmentButton: "Сохранить пароль заново",
+      "У текущего объекта OsaGuard в Связке ключей неизвестное правило доступа. OsaGuard не станет читать или заменять его автоматически. Перед повторным сохранением удалите конфликтующий объект через «Связку ключей».",
+    passwordReenrollmentButton: "Сначала удалите конфликт",
     automaticTitle: "Подтвердите автоматический режим",
     automaticCopy:
       "Перед включением автоподтверждения прочитайте важное предупреждение о безопасности. После включения дополнительные нажатия не понадобятся.",
@@ -284,7 +287,10 @@ const copy = {
       "Не удалось убедиться, что окно администратора закрыто",
     updateCheckFailed: "Не удалось проверить обновления",
     updateDownloadFailed: "Не удалось загрузить обновление",
+    updateArchiveInvalid: "Загруженное обновление не прошло проверку",
     updateInstallFailed: "Не удалось установить обновление",
+    updateUserUnavailable: "Не удалось определить текущего пользователя macOS",
+    updateConfirmationRequired: "Подтвердите установку обновления ещё раз",
     updateWatcherStopFailed: "Не удалось приостановить автоподтверждение для обновления",
     updateWatcherRestoreFailed:
       "Обновление не установлено, а автоподтверждение не удалось возобновить",
@@ -305,7 +311,7 @@ const copy = {
     updateConfirm: "Установить и перезапустить",
     uninstallTitle: "Удалить OsaGuard?",
     uninstallBody:
-      "Автоподтверждение и запуск при входе остановятся. OsaGuard удалит проверенные объекты пароля из Связки ключей и свои настройки, сбросит запись Accessibility и переместит приложение в Корзину. До очистки Корзины приложение можно восстановить.",
+      "Автоподтверждение и запуск при входе остановятся. OsaGuard удалит только текущие v2-объекты Связки ключей, принадлежность которых может проверить, удалит свои настройки, сбросит запись Универсального доступа и переместит приложение в Корзину. Объекты, созданные preview-версиями до 0.1.3, намеренно останутся нетронутыми, чтобы macOS не показывала запросы смены владельца. При желании удалите старые объекты OsaGuard вручную в приложении «Связка ключей» по точным именам «OsaGuard administrator password» и «OsaGuard protected product state». Само приложение можно вернуть из Корзины, но удалённые v2-данные — нельзя.",
     uninstallConfirm: "Удалить в Корзину",
     uninstallError: "Не удалось удалить OsaGuard.",
     accessFollowup:
@@ -519,7 +525,7 @@ function renderSetup() {
           title: t.passwordTitle,
           body: passwordNeedsReenrollment ? t.passwordReenrollmentCopy : t.passwordCopy,
           complete: password,
-          locked: !access,
+          locked: !access || passwordNeedsReenrollment,
           action: "password",
           label: passwordNeedsReenrollment
             ? t.passwordReenrollmentButton
@@ -585,8 +591,14 @@ function updateErrorMessage(code) {
       return t.updateCheckFailed;
     case "download_failed":
       return t.updateDownloadFailed;
+    case "archive_invalid":
+      return t.updateArchiveInvalid;
     case "install_failed":
       return t.updateInstallFailed;
+    case "user_unavailable":
+      return t.updateUserUnavailable;
+    case "confirmation_required":
+      return t.updateConfirmationRequired;
     case "watcher_stop_failed":
       return t.updateWatcherStopFailed;
     case "watcher_restore_failed":

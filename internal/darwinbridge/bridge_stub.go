@@ -6,6 +6,7 @@ import "errors"
 
 var ErrPasswordPromptCanceled = errors.New("password entry canceled")
 var ErrKeychainItemNeedsReenrollment = errors.New("keychain item belongs to a different application identity")
+var ErrKeychainInteractionNotAllowed = errors.New("keychain operation requires forbidden user interaction")
 
 type KeychainItemState string
 

@@ -56,23 +56,21 @@ if (previewSequence && !/^[1-9][0-9]*$/.test(previewSequence)) {
   console.error("OSAGUARD_PREVIEW_SEQUENCE must be a positive integer");
   process.exit(1);
 }
-const expectedSection = previewSequence
-  ? `${expectedVersion}-preview.${previewSequence}`
-  : expectedVersion;
-const escapedSection = expectedSection.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const packagedPreview = expectedVersion.match(
+  /^(\d+\.\d+\.\d+)-preview\.([1-9][0-9]*)$/,
+);
+if (previewSequence && packagedPreview?.[2] !== previewSequence) {
+  console.error(
+    `Package version ${expectedVersion} does not match preview sequence ${previewSequence}`,
+  );
+  process.exit(1);
+}
 const exactSection = new RegExp(
-  `^## \\[${escapedSection}\\](?: - \\d{4}-\\d{2}-\\d{2})?$`,
+  `^## \\[${escapedVersion}\\](?: - \\d{4}-\\d{2}-\\d{2})?$`,
   "m",
 );
-const anyPreviewSection = new RegExp(
-  `^## \\[${escapedVersion}-preview\\.[1-9][0-9]*\\](?: - \\d{4}-\\d{2}-\\d{2})?$`,
-  "m",
-);
-if (
-  !exactSection.test(changelog) &&
-  (previewSequence || !anyPreviewSection.test(changelog))
-) {
-  console.error(`CHANGELOG.md has no release section for ${expectedSection}`);
+if (!exactSection.test(changelog)) {
+  console.error(`CHANGELOG.md has no release section for ${expectedVersion}`);
   process.exit(1);
 }
 
@@ -90,7 +88,7 @@ if (process.env.GITHUB_REF_TYPE === "tag") {
       "m",
     ).test(changelog)
   ) {
-    console.error(`CHANGELOG.md has no stable release section for ${expectedVersion}`);
+    console.error(`CHANGELOG.md has no release section for ${expectedVersion}`);
     process.exit(1);
   }
 }

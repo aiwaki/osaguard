@@ -10,6 +10,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
   attestations: write
   id-token: write
@@ -19,8 +20,9 @@ concurrency:
   cancel-in-progress: false
 
 # This is intentionally a preview-only path, modelled on Slipstream's preview
-# releases. It uses the GitHub-hosted macOS runner's ad-hoc signature and never
-# imports a certificate, opens a Keychain, or publishes a stable release.
+# releases. It imports one persistent self-signed code-signing identity into a
+# disposable runner Keychain. This provides a stable macOS code requirement but
+# does not provide Developer ID trust, Gatekeeper acceptance, or notarization.
 jobs:
   publish-preview:
     name: Build and publish Apple Silicon preview
@@ -47,6 +49,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -64,11 +67,11 @@ jobs:
         run: |
           set -euo pipefail
           version=$(node -p "require('./app-tauri/package.json').version")
-          [[ "$version" == 0.1.2 ]] || {
-            echo "Preview ${PREVIEW} must package OsaGuard 0.1.2; found $version" >&2
+          [[ "$version" == "0.1.3-preview.${PREVIEW}" ]] || {
+            echo "Preview ${PREVIEW} must package canonical version 0.1.3-preview.${PREVIEW}; found $version" >&2
             exit 1
           }
-          tag="v${version}-preview.${PREVIEW}"
+          tag="v${version}"
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
           existing_tag=$(gh api \
             "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/$tag" \
@@ -140,18 +143,109 @@ jobs:
         working-directory: app-tauri
         run: npm ci
 
-      - name: Build preview artifacts
+      - name: Validate source before loading signing secrets
         working-directory: app-tauri
-        shell: bash
         env:
           OSAGUARD_PREVIEW_SEQUENCE: ${{ inputs.preview }}
+        shell: bash
         run: |
           set -euo pipefail
           node ../scripts/check-release-version.mjs
           npm test
-          npm run build:local
 
-          bundle_directory=src-tauri/target/release/bundle
+      - name: Import the persistent preview signing identity
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${APPLE_CERTIFICATE:?APPLE_CERTIFICATE is required}"
+          : "${APPLE_CERTIFICATE_PASSWORD:?APPLE_CERTIFICATE_PASSWORD is required}"
+          readonly signing_identity='OsaGuard Preview Code Signing'
+          readonly expected_sha256='a6cf1f0bc828d93e7b4f0fbc87a5163968acd7499decbfb29314ecd76db92c52'
+          readonly expected_sha1='894700cbb7d156943c872afab16ed609ca1f43e4'
+          pinned_certificate="$GITHUB_WORKSPACE/docs/release-signing/osaguard-preview-code-signing.pem"
+          pinned_der="$RUNNER_TEMP/osaguard-preview-pinned.der"
+          imported_der="$RUNNER_TEMP/osaguard-preview-imported.der"
+          [[ -f "$pinned_certificate" ]]
+          /usr/bin/openssl x509 -in "$pinned_certificate" -outform DER -out "$pinned_der"
+          pinned_sha256=$(/usr/bin/shasum -a 256 "$pinned_der" | /usr/bin/awk '{print $1}')
+          pinned_sha1=$(/usr/bin/openssl x509 -in "$pinned_certificate" -noout -fingerprint -sha1 \
+            | /usr/bin/sed 's/^.*=//' \
+            | /usr/bin/tr -d ':' \
+            | /usr/bin/tr '[:upper:]' '[:lower:]')
+          [[ "$pinned_sha256" == "$expected_sha256" && "$pinned_sha1" == "$expected_sha1" ]] || {
+            echo "Committed preview certificate does not match the pinned fingerprints" >&2
+            exit 1
+          }
+          keychain="$RUNNER_TEMP/osaguard-preview-signing.keychain-db"
+          certificate="$RUNNER_TEMP/osaguard-preview-signing.p12"
+          keychain_password="$(/usr/bin/uuidgen)$(/usr/bin/uuidgen)"
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$APPLE_CERTIFICATE" | /usr/bin/base64 --decode > "$certificate"
+          /bin/chmod 600 "$certificate"
+          /usr/bin/security create-keychain -p "$keychain_password" "$keychain"
+          /usr/bin/security set-keychain-settings -lut 21600 "$keychain"
+          /usr/bin/security unlock-keychain -p "$keychain_password" "$keychain"
+          /usr/bin/security import "$certificate" \
+            -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          /usr/bin/security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain" >/dev/null
+          /usr/bin/security list-keychains -d user -s "$keychain"
+          identity_count=$(/usr/bin/security find-identity -p codesigning "$keychain" \
+            | /usr/bin/grep -F -c "\"$signing_identity\"" || true)
+          [[ "$identity_count" == 1 ]] || {
+            echo "Expected exactly one configured preview signing identity" >&2
+            exit 1
+          }
+          /usr/bin/security find-certificate \
+            -c "$signing_identity" \
+            -p \
+            "$keychain" > "$RUNNER_TEMP/osaguard-preview-signing.pem"
+          /usr/bin/openssl x509 \
+            -in "$RUNNER_TEMP/osaguard-preview-signing.pem" \
+            -outform DER \
+            -out "$imported_der"
+          /usr/bin/cmp -s "$pinned_der" "$imported_der" || {
+            echo "Imported preview signing certificate does not match the committed certificate" >&2
+            exit 1
+          }
+          cert_sha1=$(/usr/bin/openssl x509 \
+            -in "$RUNNER_TEMP/osaguard-preview-signing.pem" \
+            -noout \
+            -fingerprint \
+            -sha1 \
+            | /usr/bin/sed 's/^.*=//' \
+            | /usr/bin/tr -d ':' \
+            | /usr/bin/tr '[:upper:]' '[:lower:]')
+          [[ "$cert_sha1" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$cert_sha1" == "$expected_sha1" ]]
+          {
+            echo "OSAGUARD_SIGNING_KEYCHAIN=$keychain"
+            echo "OSAGUARD_SIGNING_CERTIFICATE=$certificate"
+            echo "OSAGUARD_CERT_SHA1=$cert_sha1"
+          } >> "$GITHUB_ENV"
+
+      - name: Build preview artifacts
+        working-directory: app-tauri
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${TAURI_SIGNING_PRIVATE_KEY:?TAURI_SIGNING_PRIVATE_KEY is required}"
+          : "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:?TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required}"
+          node ../scripts/configure-preview-updater.mjs
+          npm run build:updater
+
+          bundle_directory=src-tauri/target/aarch64-apple-darwin/release/bundle
           disk_images=()
           while IFS= read -r disk_image; do
             disk_images+=("$disk_image")
@@ -166,6 +260,20 @@ jobs:
             exit 1
           }
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_bundle"
+          stable_requirement="identifier \"dev.aiwaki.osaguard\" and certificate leaf = H\"${OSAGUARD_CERT_SHA1}\""
+          /usr/bin/codesign --verify \
+            --deep \
+            --strict \
+            --verbose=2 \
+            -R="$stable_requirement" \
+            "$app_bundle"
+          /usr/bin/codesign -d -r- "$app_bundle" \
+            2> "$RUNNER_TEMP/osaguard-designated-requirement.txt"
+          /usr/bin/grep -F 'identifier "dev.aiwaki.osaguard"' \
+            "$RUNNER_TEMP/osaguard-designated-requirement.txt"
+          /usr/bin/tr '[:upper:]' '[:lower:]' \
+            < "$RUNNER_TEMP/osaguard-designated-requirement.txt" \
+            | /usr/bin/grep -F "$OSAGUARD_CERT_SHA1"
           app_executables=("$app_bundle"/Contents/MacOS/*)
           [[ ${#app_executables[@]} == 1 && -f "${app_executables[0]}" ]] || {
             echo "Expected exactly one application executable" >&2
@@ -178,21 +286,63 @@ jobs:
 
           release_dir=release-assets
           /bin/mkdir "$release_dir"
-          asset_prefix="OsaGuard_${{ steps.release.outputs.version }}_preview.${{ steps.release.outputs.preview }}_aarch64"
+          asset_prefix="OsaGuard_${{ steps.release.outputs.version }}_aarch64"
           /bin/cp "${disk_images[0]}" "$release_dir/${asset_prefix}.dmg"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
             "$app_bundle" "$release_dir/${asset_prefix}.zip"
+          updater_archives=()
+          while IFS= read -r updater_archive; do
+            updater_archives+=("$updater_archive")
+          done < <(/usr/bin/find "$bundle_directory" -type f -name '*.app.tar.gz' -print)
+          [[ ${#updater_archives[@]} == 1 ]] || {
+            echo "Expected exactly one updater archive, found ${#updater_archives[@]}" >&2
+            exit 1
+          }
+          [[ -s "${updater_archives[0]}.sig" ]] || {
+            echo "Updater signature is missing" >&2
+            exit 1
+          }
+          /bin/cp "${updater_archives[0]}" "$release_dir/OsaGuard.app.tar.gz"
+          /bin/cp "${updater_archives[0]}.sig" "$release_dir/OsaGuard.app.tar.gz.sig"
+          node ../scripts/generate-preview-release-metadata.mjs \
+            "$release_dir" \
+            "${{ steps.release.outputs.tag }}" \
+            "$GITHUB_REPOSITORY"
+          node ../scripts/verify-updater-signature.mjs \
+            "$release_dir/OsaGuard.app.tar.gz" \
+            "$release_dir/OsaGuard.app.tar.gz.sig"
           (
             cd "$release_dir"
-            /usr/bin/shasum -a 256 "${asset_prefix}.dmg" "${asset_prefix}.zip" > SHA256SUMS
+            /usr/bin/shasum -a 256 \
+              "${asset_prefix}.dmg" \
+              "${asset_prefix}.zip" \
+              OsaGuard.app.tar.gz \
+              OsaGuard.app.tar.gz.sig \
+              latest.json > SHA256SUMS
           )
+
+      - name: Remove the disposable signing Keychain
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="${OSAGUARD_SIGNING_KEYCHAIN:-$RUNNER_TEMP/osaguard-preview-signing.keychain-db}"
+          certificate="${OSAGUARD_SIGNING_CERTIFICATE:-$RUNNER_TEMP/osaguard-preview-signing.p12}"
+          if [[ -f "$keychain" ]]; then
+            /usr/bin/security delete-keychain "$keychain" || true
+          fi
+          /bin/rm -f "$certificate"
+          /bin/rm -f "$RUNNER_TEMP/osaguard-preview-signing.pem"
+          /bin/rm -f \
+            "$RUNNER_TEMP/osaguard-preview-pinned.der" \
+            "$RUNNER_TEMP/osaguard-preview-imported.der"
 
       - name: Attest preview artifacts
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
         with:
           subject-path: app-tauri/release-assets/*
 
-      - name: Create, validate, and publish the exact preview
+      - name: Create and validate the exact preview draft
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
@@ -208,11 +358,13 @@ jobs:
             printf '%s\n\n' "OsaGuard ${RELEASE_VERSION} — Preview ${RELEASE_PREVIEW}"
             printf '%s\n\n' 'Предварительная сборка для Apple Silicon. Это не stable-канал и не нотариально заверенная Apple сборка.'
             printf '%s\n\n' 'Preview build for Apple Silicon. This is not the stable channel and is not notarized by Apple.'
-            printf '%s\n\n' 'Исправляет зависание Preview 1 на экране загрузки. Replaces Preview 1 and fixes the dashboard loading-screen hang.'
+            printf '%s\n\n' 'Первый updater-capable preview: 0.1.2 обновляется на него вручную; последующие preview рассчитаны на автоматическое обнаружение и устанавливаются только после подтверждения. First updater-capable preview: install it manually over 0.1.2; later previews are designed for automatic discovery and install only after confirmation.'
             printf '%s\n' '## Установка / Installation'
-            printf '%s\n' "- Скачайте \`OsaGuard_${RELEASE_VERSION}_preview.${RELEASE_PREVIEW}_aarch64.dmg\`, перенесите OsaGuard в «Программы» и запускайте только из этой папки. / Download \`OsaGuard_${RELEASE_VERSION}_preview.${RELEASE_PREVIEW}_aarch64.dmg\`, move OsaGuard to Applications, and run it only from there."
-            printf '%s\n' '- macOS может предупредить, что приложение не нотариально. Не отключайте Gatekeeper глобально; используйте только контекстное меню Finder → «Открыть», если доверяете этому exact preview. / macOS may warn because the app is not notarized. Do not disable Gatekeeper globally; use the Finder contextual Open command only if you trust this exact preview.'
-            printf '%s\n' '- Обновления preview устанавливаются вручную: встроенный updater намеренно не настроен на GitHub Latest. / Preview updates are manual: the built-in updater is intentionally not pointed at GitHub Latest.'
+            printf '%s\n' "- Скачайте \`OsaGuard_${RELEASE_VERSION}_aarch64.dmg\`, перенесите OsaGuard в «Программы» и запускайте только из этой папки. / Download \`OsaGuard_${RELEASE_VERSION}_aarch64.dmg\`, move OsaGuard to Applications, and run it only from there."
+            printf '%s\n' '- macOS может предупредить, что приложение не нотариально. Не отключайте Gatekeeper глобально; после первой отклонённой попытки откройте «Системные настройки» → «Конфиденциальность и безопасность» → «Всё равно открыть» только если доверяете этому exact preview. Контекстное меню Finder → «Открыть» — альтернатива. / macOS may warn because the app is not notarized. Do not disable Gatekeeper globally; after the first blocked launch, use System Settings → Privacy & Security → Open Anyway only if you trust this exact preview. Finder contextual Open is an alternative.'
+            printf '%s\n' '- Preview использует отдельную постоянную подпись приложения и Tauri updater-архивов, но это не Apple Developer ID и не нотарификация. / The preview uses persistent app and Tauri updater signing identities, but neither is Apple Developer ID or notarization.'
+            printf '%s\n' '- Эта ручная bridge-установка создаёт свежие v2-записи Связки ключей: пароль нужно ввести один раз. Старые preview-записи намеренно не читаются и не изменяются. / This manual bridge creates fresh v2 Keychain records, so enter the password once. Legacy preview records are intentionally neither read nor modified.'
+            printf '%s\n' '- Cancel при смене пароля ничего не меняет; в меню добавлено безопасное встроенное удаление OsaGuard. / Canceling a password change changes nothing; the menu now includes a built-in OsaGuard uninstaller.'
             printf '%s\n\n' '## Критическое предупреждение / Critical warning'
             printf '%s\n\n' 'После настройки OsaGuard может автоматически отправить пароль администратора в подходящее окно AppleScript. Код, уже запущенный от вашего пользователя, может этим получить root без нового ручного подтверждения. After setup, OsaGuard can automatically submit an administrator password to a matching AppleScript dialog. Code already running as your user can thereby obtain root without a new manual confirmation.'
             printf '%s\n' "Source commit: ${RELEASE_COMMIT}"
@@ -225,6 +377,7 @@ jobs:
             -f body="$(< "$notes")" \
             -F draft=true \
             -F prerelease=true \
+            -f make_latest=false \
             --jq '.id')
           [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
           for asset in app-tauri/release-assets/*; do
@@ -250,8 +403,11 @@ jobs:
           [[ "$(gh api "$api" --jq '.draft')" == true ]]
           [[ "$(gh api "$api" --jq '.prerelease')" == true ]]
           expected_assets=$(printf '%s\n' \
-            "OsaGuard_${RELEASE_VERSION}_preview.${RELEASE_PREVIEW}_aarch64.dmg" \
-            "OsaGuard_${RELEASE_VERSION}_preview.${RELEASE_PREVIEW}_aarch64.zip" \
+            "OsaGuard_${RELEASE_VERSION}_aarch64.dmg" \
+            "OsaGuard_${RELEASE_VERSION}_aarch64.zip" \
+            OsaGuard.app.tar.gz \
+            OsaGuard.app.tar.gz.sig \
+            latest.json \
             SHA256SUMS | LC_ALL=C sort)
           actual_assets=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" \
@@ -261,11 +417,8 @@ jobs:
             exit 1
           }
 
-          gh api --method PATCH "$api" \
-            -F draft=false \
-            -F prerelease=true \
-            -f make_latest=false \
-            --silent
-          [[ "$(gh api "$api" --jq '.draft')" == false ]]
-          [[ "$(gh api "$api" --jq '.prerelease')" == true ]]
           [[ "$(gh api "$api" --jq '.make_latest')" != true ]]
+          {
+            echo "Validated draft release ${RELEASE_TAG} (id ${release_id})."
+            echo "Inspect its assets and publish it manually as a prerelease with Latest disabled."
+          } >> "$GITHUB_STEP_SUMMARY"

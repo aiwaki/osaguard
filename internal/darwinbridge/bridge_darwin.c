@@ -48,9 +48,14 @@ typedef struct {
     char parent_cdhash[128];
 } og_process_info;
 
-static const char *OG_KEYCHAIN_SERVICE = "dev.aiwaki.osaguard.admin-password";
-static const char *OG_INTEGRITY_SERVICE = "dev.aiwaki.osaguard.integrity-state";
+// v2 deliberately starts with fresh items. Preview builds before 0.1.3 used
+// unversioned services whose ACLs are bound to their changing ad-hoc identity.
+// Never query or mutate those legacy records from the new signing identity.
+static const char *OG_KEYCHAIN_SERVICE = "dev.aiwaki.osaguard.admin-password.v2";
+static const char *OG_INTEGRITY_SERVICE = "dev.aiwaki.osaguard.integrity-state.v2";
 static const char *OG_INTEGRITY_ACCOUNT = "product";
+static const char *OG_KEYCHAIN_LABEL = "OsaGuard administrator password";
+static const char *OG_INTEGRITY_LABEL = "OsaGuard protected product state";
 
 static void og_set_error(char *err, size_t err_len, const char *message) {
     if (err == NULL || err_len == 0) {
@@ -75,6 +80,24 @@ static void og_set_osstatus_error(char *err, size_t err_len, const char *operati
     if (err != NULL && err_len > 0) {
         snprintf(err, err_len, "%s: %s", operation, detail_buf);
     }
+}
+
+static void og_set_keychain_osstatus_error(char *err, size_t err_len,
+    const char *operation, OSStatus status) {
+    if (status == errSecInteractionNotAllowed || status == errSecInteractionRequired) {
+        if (err != NULL && err_len > 0) {
+            snprintf(err, err_len, "keychain_interaction_not_allowed: %s", operation);
+        }
+        return;
+    }
+    og_set_osstatus_error(err, err_len, operation, status);
+}
+
+static OSStatus og_keychain_require_noninteractive(void) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return SecKeychainSetUserInteractionAllowed(false);
+#pragma clang diagnostic pop
 }
 
 static void og_copy_cfstring(CFStringRef value, char *out, size_t out_len) {
@@ -445,6 +468,45 @@ int og_read_auth_snapshot(og_auth_snapshot *out, char *err, size_t err_len) {
     return 0;
 }
 
+static void og_keychain_suppress_authentication_ui(CFMutableDictionaryRef query) {
+    if (query == NULL) return;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    CFDictionarySetValue(query, kSecUseAuthenticationUI, kSecUseAuthenticationUIFail);
+#pragma clang diagnostic pop
+}
+
+// All production SecItem operations go through these wrappers. Legacy file
+// Keychain records must return errSecInteractionNotAllowed instead of opening
+// SecurityAgent when their ACL or lock state requires user interaction.
+static OSStatus og_sec_item_copy_matching(CFMutableDictionaryRef query, CFTypeRef *result) {
+    OSStatus status = og_keychain_require_noninteractive();
+    if (status != errSecSuccess) return status;
+    og_keychain_suppress_authentication_ui(query);
+    return SecItemCopyMatching(query, result);
+}
+
+static OSStatus og_sec_item_update(CFMutableDictionaryRef query, CFDictionaryRef updates) {
+    OSStatus status = og_keychain_require_noninteractive();
+    if (status != errSecSuccess) return status;
+    og_keychain_suppress_authentication_ui(query);
+    return SecItemUpdate(query, updates);
+}
+
+static OSStatus og_sec_item_add(CFMutableDictionaryRef attributes, CFTypeRef *result) {
+    OSStatus status = og_keychain_require_noninteractive();
+    if (status != errSecSuccess) return status;
+    og_keychain_suppress_authentication_ui(attributes);
+    return SecItemAdd(attributes, result);
+}
+
+static OSStatus og_sec_item_delete(CFMutableDictionaryRef query) {
+    OSStatus status = og_keychain_require_noninteractive();
+    if (status != errSecSuccess) return status;
+    og_keychain_suppress_authentication_ui(query);
+    return SecItemDelete(query);
+}
+
 static CFMutableDictionaryRef og_keychain_service_query(const char *service_name) {
     if (service_name == NULL) return NULL;
     CFStringRef service = CFStringCreateWithCString(NULL, service_name, kCFStringEncodingUTF8);
@@ -456,6 +518,7 @@ static CFMutableDictionaryRef og_keychain_service_query(const char *service_name
     if (query != NULL) {
         CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword);
         CFDictionarySetValue(query, kSecAttrService, service);
+        og_keychain_suppress_authentication_ui(query);
     }
     CFRelease(service);
     return query;
@@ -481,90 +544,296 @@ static CFMutableDictionaryRef og_keychain_query(const char *account) {
     return og_keychain_query_for_service(OG_KEYCHAIN_SERVICE, account);
 }
 
-static int og_access_is_caller_only(SecAccessRef access, char *err, size_t err_len) {
-    if (access == NULL) {
-        og_set_error(err, err_len, "missing Keychain access object");
-        return -1;
+static int og_cfarray_equal_unordered_unique(CFArrayRef left, CFArrayRef right) {
+    if (left == NULL || right == NULL) return left == right;
+    CFIndex count = CFArrayGetCount(left);
+    if (count != CFArrayGetCount(right)) return 0;
+    for (CFIndex index = 0; index < count; index++) {
+        CFTypeRef value = CFArrayGetValueAtIndex(left, index);
+        CFRange whole = CFRangeMake(0, count);
+        if (CFArrayGetCountOfValue(left, whole, value) != 1 ||
+            CFArrayGetCountOfValue(right, whole, value) != 1) {
+            return 0;
+        }
     }
-    SecTrustedApplicationRef expected = NULL;
+    return 1;
+}
+
+static CFMutableArrayRef og_copy_trusted_application_data(
+    CFArrayRef applications, OSStatus *status) {
+    if (status == NULL) return NULL;
+    *status = errSecSuccess;
+    if (applications == NULL) return NULL;
+    CFMutableArrayRef data_values = CFArrayCreateMutable(
+        NULL, 0, &kCFTypeArrayCallBacks);
+    if (data_values == NULL) {
+        *status = errSecAllocate;
+        return NULL;
+    }
+    CFIndex count = CFArrayGetCount(applications);
+    for (CFIndex index = 0; index < count; index++) {
+        CFDataRef data = NULL;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    OSStatus status = SecTrustedApplicationCreateFromPath(NULL, &expected);
+        *status = SecTrustedApplicationCopyData(
+            (SecTrustedApplicationRef)CFArrayGetValueAtIndex(applications, index), &data);
 #pragma clang diagnostic pop
-    if (status != errSecSuccess || expected == NULL) {
-        if (expected != NULL) CFRelease(expected);
-        og_set_osstatus_error(err, err_len, "identify current Keychain caller", status);
-        return -1;
+        if (*status != errSecSuccess || data == NULL) {
+            if (data != NULL) CFRelease(data);
+            CFRelease(data_values);
+            return NULL;
+        }
+        CFArrayAppendValue(data_values, data);
+        CFRelease(data);
     }
-    CFDataRef expected_data = NULL;
+    return data_values;
+}
+
+// Compare every authorization, trusted application, prompt selector and
+// descriptor on an ACL. The runtime template is created by SecAccessCreate for
+// the current executable, so this rejects a pre-seeded item that grants only
+// decrypt access to OsaGuard while retaining a separate ChangeACL/ChangeOwner
+// path for another application.
+static int og_acl_matches_template(SecACLRef actual, SecACLRef expected,
+    char *err, size_t err_len) {
+    if (actual == NULL || expected == NULL) return 0;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    status = SecTrustedApplicationCopyData(expected, &expected_data);
-    CFArrayRef acls = SecAccessCopyMatchingACLList(access, kSecACLAuthorizationDecrypt);
+    CFArrayRef actual_authorizations = SecACLCopyAuthorizations(actual);
+    CFArrayRef expected_authorizations = SecACLCopyAuthorizations(expected);
 #pragma clang diagnostic pop
-    CFRelease(expected);
-    if (status != errSecSuccess || expected_data == NULL || acls == NULL) {
-        if (expected_data != NULL) CFRelease(expected_data);
-        if (acls != NULL) CFRelease(acls);
-        og_set_osstatus_error(err, err_len, "inspect caller-only Keychain ACL", status);
+    if (actual_authorizations == NULL || expected_authorizations == NULL) {
+        if (actual_authorizations != NULL) CFRelease(actual_authorizations);
+        if (expected_authorizations != NULL) CFRelease(expected_authorizations);
+        og_set_error(err, err_len, "cannot inspect complete Keychain ACL authorizations");
+        return -1;
+    }
+    int authorizations_match = og_cfarray_equal_unordered_unique(
+        actual_authorizations, expected_authorizations);
+    CFRelease(actual_authorizations);
+    CFRelease(expected_authorizations);
+    if (!authorizations_match) return 0;
+
+    CFArrayRef actual_applications = NULL;
+    CFArrayRef expected_applications = NULL;
+    CFStringRef actual_description = NULL;
+    CFStringRef expected_description = NULL;
+    SecKeychainPromptSelector actual_prompt = 0;
+    SecKeychainPromptSelector expected_prompt = 0;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    OSStatus actual_status = SecACLCopyContents(actual, &actual_applications,
+        &actual_description, &actual_prompt);
+    OSStatus expected_status = SecACLCopyContents(expected, &expected_applications,
+        &expected_description, &expected_prompt);
+#pragma clang diagnostic pop
+    if (actual_status != errSecSuccess || expected_status != errSecSuccess) {
+        if (actual_applications != NULL) CFRelease(actual_applications);
+        if (expected_applications != NULL) CFRelease(expected_applications);
+        if (actual_description != NULL) CFRelease(actual_description);
+        if (expected_description != NULL) CFRelease(expected_description);
+        og_set_keychain_osstatus_error(err, err_len,
+            "inspect complete Keychain ACL contents",
+            actual_status != errSecSuccess ? actual_status : expected_status);
         return -1;
     }
 
-    int caller_only = 0;
-    if (CFArrayGetCount(acls) == 1) {
-        CFArrayRef applications = NULL;
-        CFStringRef description = NULL;
-        SecKeychainPromptSelector prompt = {0};
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        status = SecACLCopyContents((SecACLRef)CFArrayGetValueAtIndex(acls, 0),
-            &applications, &description, &prompt);
-#pragma clang diagnostic pop
-        if (description != NULL) CFRelease(description);
-        if (status == errSecSuccess && applications != NULL && CFArrayGetCount(applications) == 1) {
-            CFDataRef application_data = NULL;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            status = SecTrustedApplicationCopyData(
-                (SecTrustedApplicationRef)CFArrayGetValueAtIndex(applications, 0), &application_data);
-#pragma clang diagnostic pop
-            if (status == errSecSuccess && application_data != NULL && CFEqual(application_data, expected_data)) {
-                caller_only = 1;
-            }
-            if (application_data != NULL) CFRelease(application_data);
-        }
-        if (applications != NULL) CFRelease(applications);
+    int descriptions_match =
+        (actual_description == NULL && expected_description == NULL) ||
+        (actual_description != NULL && expected_description != NULL &&
+            CFEqual(actual_description, expected_description));
+    OSStatus actual_data_status = errSecSuccess;
+    OSStatus expected_data_status = errSecSuccess;
+    CFMutableArrayRef actual_data = og_copy_trusted_application_data(
+        actual_applications, &actual_data_status);
+    CFMutableArrayRef expected_data = og_copy_trusted_application_data(
+        expected_applications, &expected_data_status);
+    int application_nullness_matches =
+        (actual_applications == NULL) == (expected_applications == NULL);
+    int applications_match = application_nullness_matches &&
+        actual_data_status == errSecSuccess && expected_data_status == errSecSuccess &&
+        og_cfarray_equal_unordered_unique(actual_data, expected_data);
+    if (actual_applications != NULL) CFRelease(actual_applications);
+    if (expected_applications != NULL) CFRelease(expected_applications);
+    if (actual_description != NULL) CFRelease(actual_description);
+    if (expected_description != NULL) CFRelease(expected_description);
+    if (actual_data != NULL) CFRelease(actual_data);
+    if (expected_data != NULL) CFRelease(expected_data);
+    if (actual_data_status != errSecSuccess || expected_data_status != errSecSuccess) {
+        og_set_keychain_osstatus_error(err, err_len,
+            "inspect complete Keychain trusted applications",
+            actual_data_status != errSecSuccess ? actual_data_status : expected_data_status);
+        return -1;
     }
-    CFRelease(expected_data);
-    CFRelease(acls);
-    if (!caller_only) {
-        og_set_error(err, err_len, "Keychain decrypt ACL is not restricted to the current application");
+    // A trusted application already provides the no-prompt path. Prompt flags
+    // make status/save/load behavior depend on SecurityAgent and are rejected.
+    if (actual_prompt != 0 || expected_prompt != 0) return 0;
+    return descriptions_match && applications_match ? 1 : 0;
+}
+
+static int og_access_matches_template(SecAccessRef actual, SecAccessRef expected,
+    char *err, size_t err_len) {
+    if (actual == NULL || expected == NULL) {
+        og_set_error(err, err_len, "missing Keychain access template");
+        return -1;
+    }
+    OSStatus status = og_keychain_require_noninteractive();
+    if (status != errSecSuccess) {
+        og_set_keychain_osstatus_error(err, err_len,
+            "disable Keychain interaction before full ACL inspection", status);
+        return -1;
+    }
+    uid_t actual_uid = 0;
+    uid_t expected_uid = 0;
+    gid_t actual_gid = 0;
+    gid_t expected_gid = 0;
+    SecAccessOwnerType actual_owner = 0;
+    SecAccessOwnerType expected_owner = 0;
+    CFArrayRef actual_acls = NULL;
+    CFArrayRef expected_acls = NULL;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    OSStatus actual_status = SecAccessCopyOwnerAndACL(actual, &actual_uid,
+        &actual_gid, &actual_owner, &actual_acls);
+    OSStatus expected_status = SecAccessCopyOwnerAndACL(expected, &expected_uid,
+        &expected_gid, &expected_owner, &expected_acls);
+#pragma clang diagnostic pop
+    if (actual_status != errSecSuccess || expected_status != errSecSuccess ||
+        actual_acls == NULL || expected_acls == NULL) {
+        if (actual_acls != NULL) CFRelease(actual_acls);
+        if (expected_acls != NULL) CFRelease(expected_acls);
+        og_set_keychain_osstatus_error(err, err_len,
+            "inspect complete Keychain access template",
+            actual_status != errSecSuccess ? actual_status : expected_status);
+        return -1;
+    }
+
+    CFIndex expected_count = CFArrayGetCount(expected_acls);
+    CFIndex actual_count = CFArrayGetCount(actual_acls);
+    int matches = actual_uid == expected_uid && actual_gid == expected_gid &&
+        actual_owner == expected_owner && expected_count > 0 &&
+        actual_count == expected_count;
+    if (!matches) {
+        CFRelease(actual_acls);
+        CFRelease(expected_acls);
+        og_set_error(err, err_len,
+            "keychain_access_conflict: complete access template does not match the current application");
+        return 0;
+    }
+    int *used = calloc((size_t)expected_count, sizeof(*used));
+    if (used == NULL) {
+        CFRelease(actual_acls);
+        CFRelease(expected_acls);
+        og_set_error(err, err_len, "cannot allocate complete Keychain ACL comparison state");
+        return -1;
+    }
+    for (CFIndex actual_index = 0; matches && actual_index < expected_count; actual_index++) {
+        int found = 0;
+        for (CFIndex expected_index = 0; expected_index < expected_count; expected_index++) {
+            if (used[expected_index]) continue;
+            int acl_match = og_acl_matches_template(
+                (SecACLRef)CFArrayGetValueAtIndex(actual_acls, actual_index),
+                (SecACLRef)CFArrayGetValueAtIndex(expected_acls, expected_index),
+                err, err_len);
+            if (acl_match < 0) {
+                free(used);
+                CFRelease(actual_acls);
+                CFRelease(expected_acls);
+                return -1;
+            }
+            if (acl_match == 1) {
+                used[expected_index] = 1;
+                found = 1;
+                break;
+            }
+        }
+        if (!found) matches = 0;
+    }
+    free(used);
+    CFRelease(actual_acls);
+    CFRelease(expected_acls);
+    if (!matches) {
+        og_set_error(err, err_len,
+            "keychain_access_conflict: complete access template does not match the current application");
         return 0;
     }
     return 1;
 }
 
-static int og_item_has_caller_only_access(SecKeychainItemRef item, char *err, size_t err_len) {
+static int og_access_is_caller_only(SecAccessRef access, const char *label,
+    char *err, size_t err_len) {
+    if (access == NULL || label == NULL) {
+        og_set_error(err, err_len, "missing Keychain access object or label");
+        return -1;
+    }
+    OSStatus status = og_keychain_require_noninteractive();
+    if (status != errSecSuccess) {
+        og_set_keychain_osstatus_error(err, err_len,
+            "disable Keychain interaction before template creation", status);
+        return -1;
+    }
+    CFStringRef label_string = CFStringCreateWithCString(
+        NULL, label, kCFStringEncodingUTF8);
+    if (label_string == NULL) {
+        og_set_error(err, err_len, "cannot allocate caller-only Keychain access label");
+        return -1;
+    }
+    SecAccessRef expected = NULL;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    status = SecAccessCreate(label_string, NULL, &expected);
+#pragma clang diagnostic pop
+    CFRelease(label_string);
+    if (status != errSecSuccess || expected == NULL) {
+        if (expected != NULL) CFRelease(expected);
+        og_set_keychain_osstatus_error(err, err_len,
+            "create caller-only Keychain access template", status);
+        return -1;
+    }
+    int matches = og_access_matches_template(access, expected, err, err_len);
+    CFRelease(expected);
+    return matches;
+}
+
+static OSStatus og_keychain_item_copy_access_noninteractive(
+    SecKeychainItemRef item, SecAccessRef *access) {
+    OSStatus status = og_keychain_require_noninteractive();
+    if (status != errSecSuccess) return status;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return SecKeychainItemCopyAccess(item, access);
+#pragma clang diagnostic pop
+}
+
+static int og_item_has_caller_only_access(SecKeychainItemRef item,
+    const char *label, char *err, size_t err_len) {
     if (item == NULL) {
         og_set_error(err, err_len, "missing Keychain item for ACL verification");
         return -1;
     }
     SecAccessRef access = NULL;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    OSStatus status = SecKeychainItemCopyAccess(item, &access);
-#pragma clang diagnostic pop
+    OSStatus status = og_keychain_item_copy_access_noninteractive(item, &access);
     if (status != errSecSuccess || access == NULL) {
         if (access != NULL) CFRelease(access);
-        og_set_osstatus_error(err, err_len, "copy stored Keychain ACL", status);
+        og_set_keychain_osstatus_error(err, err_len, "copy stored Keychain ACL", status);
         return -1;
     }
-    int caller_only = og_access_is_caller_only(access, err, err_len);
+    int caller_only = og_access_is_caller_only(access, label, err, err_len);
     CFRelease(access);
     return caller_only;
 }
 
-static int og_query_item_has_caller_only_access(CFDictionaryRef base_query, char *err, size_t err_len) {
+// Return 1 and a retained exact item reference after complete access-template
+// verification, 0 when absent, 2 for a typed access conflict, and -1 for an
+// inspection failure. Callers must use the returned reference for any later
+// data access or mutation instead of repeating the broad service/account query.
+static int og_keychain_copy_verified_item(CFDictionaryRef base_query,
+    const char *label, SecKeychainItemRef *item_out, char *err, size_t err_len) {
+    if (base_query == NULL || label == NULL || item_out == NULL) {
+        og_set_error(err, err_len, "invalid verified Keychain item lookup");
+        return -1;
+    }
+    *item_out = NULL;
     CFMutableDictionaryRef query = CFDictionaryCreateMutableCopy(NULL, 0, base_query);
     if (query == NULL) {
         og_set_error(err, err_len, "cannot allocate Keychain ACL verification query");
@@ -573,16 +842,176 @@ static int og_query_item_has_caller_only_access(CFDictionaryRef base_query, char
     CFDictionarySetValue(query, kSecReturnRef, kCFBooleanTrue);
     CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
     CFTypeRef raw_item = NULL;
-    OSStatus status = SecItemCopyMatching(query, &raw_item);
+    OSStatus status = og_sec_item_copy_matching(query, &raw_item);
     CFRelease(query);
+    if (status == errSecItemNotFound) return 0;
     if (status != errSecSuccess || raw_item == NULL) {
         if (raw_item != NULL) CFRelease(raw_item);
-        og_set_osstatus_error(err, err_len, "load Keychain item for ACL verification", status);
+        if (status == errSecSuccess) {
+            og_set_error(err, err_len,
+                "Keychain ACL verification query returned no item reference");
+        } else {
+            og_set_keychain_osstatus_error(err, err_len,
+                "load Keychain item for ACL verification", status);
+        }
         return -1;
     }
-    int caller_only = og_item_has_caller_only_access((SecKeychainItemRef)raw_item, err, err_len);
+    int caller_only = og_item_has_caller_only_access(
+        (SecKeychainItemRef)raw_item, label, err, err_len);
+    if (caller_only == 1) {
+        *item_out = (SecKeychainItemRef)raw_item;
+        return 1;
+    }
     CFRelease(raw_item);
-    return caller_only;
+    return caller_only == 0 ? 2 : -1;
+}
+
+// Read data only through a previously verified stable item reference. If that
+// item disappears after verification, return 0; a same-service replacement is
+// deliberately not considered and therefore cannot win a check/use race.
+static int og_keychain_copy_verified_item_data(SecKeychainItemRef item,
+    CFDataRef *data_out, const char *operation, char *err, size_t err_len) {
+    if (item == NULL || data_out == NULL || operation == NULL) {
+        og_set_error(err, err_len, "invalid exact Keychain data lookup");
+        return -1;
+    }
+    *data_out = NULL;
+    const void *item_values[] = {item};
+    CFArrayRef item_list = CFArrayCreate(
+        NULL, item_values, 1, &kCFTypeArrayCallBacks);
+    CFMutableDictionaryRef query = CFDictionaryCreateMutable(
+        NULL, 0, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+    if (item_list == NULL || query == NULL) {
+        if (item_list != NULL) CFRelease(item_list);
+        if (query != NULL) CFRelease(query);
+        og_set_error(err, err_len, "cannot allocate exact Keychain data query");
+        return -1;
+    }
+    CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword);
+    CFDictionarySetValue(query, kSecMatchItemList, item_list);
+    CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue);
+    CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
+    CFTypeRef result = NULL;
+    OSStatus status = og_sec_item_copy_matching(query, &result);
+    CFRelease(query);
+    CFRelease(item_list);
+    if (status == errSecItemNotFound) return 0;
+    if (status != errSecSuccess || result == NULL) {
+        if (result != NULL) CFRelease(result);
+        if (status == errSecSuccess) {
+            og_set_error(err, err_len,
+                "exact Keychain data query returned no data");
+        } else {
+            og_set_keychain_osstatus_error(err, err_len, operation, status);
+        }
+        return -1;
+    }
+    if (CFGetTypeID(result) != CFDataGetTypeID()) {
+        CFRelease(result);
+        og_set_error(err, err_len, "exact Keychain result is not data");
+        return -1;
+    }
+    *data_out = (CFDataRef)result;
+    return 1;
+}
+
+// Delete exactly the item reference returned by the service/account lookup,
+// and only after its complete runtime access template has been verified. A
+// colliding record with a prompt-enabled, additional, or otherwise unknown ACL
+// is left untouched and reported as a typed re-enrolment conflict.
+static int og_keychain_delete_verified_item(CFDictionaryRef base_query,
+    const char *label, const char *delete_operation,
+    char *err, size_t err_len) {
+    SecKeychainItemRef item = NULL;
+    int item_state = og_keychain_copy_verified_item(
+        base_query, label, &item, err, err_len);
+    if (item_state == 0) return 0;
+    if (item_state != 1) return -1;
+    const void *item_values[] = {item};
+    CFArrayRef item_list = CFArrayCreate(
+        NULL, item_values, 1, &kCFTypeArrayCallBacks);
+    CFMutableDictionaryRef delete_query = CFDictionaryCreateMutable(
+        NULL, 0, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+    if (item_list == NULL || delete_query == NULL) {
+        if (item_list != NULL) CFRelease(item_list);
+        if (delete_query != NULL) CFRelease(delete_query);
+        CFRelease(item);
+        og_set_error(err, err_len, "cannot allocate exact Keychain deletion query");
+        return -1;
+    }
+    CFDictionarySetValue(delete_query, kSecClass, kSecClassGenericPassword);
+    CFDictionarySetValue(delete_query, kSecMatchItemList, item_list);
+    OSStatus status = og_sec_item_delete(delete_query);
+    CFRelease(delete_query);
+    CFRelease(item_list);
+    CFRelease(item);
+    if (status != errSecSuccess && status != errSecItemNotFound) {
+        og_set_keychain_osstatus_error(err, err_len, delete_operation, status);
+        return -1;
+    }
+    return 0;
+}
+
+// Return 0 after updating an existing item, 1 when no item exists, and -1 on
+// failure. The exact item reference is retained in kSecMatchItemList so a
+// delete-and-recreate race cannot redirect password bytes to another record.
+static int og_keychain_update_existing_item(CFDictionaryRef base_query, CFDataRef data,
+    const char *label, char *err, size_t err_len) {
+    CFMutableDictionaryRef lookup_query = CFDictionaryCreateMutableCopy(NULL, 0, base_query);
+    if (lookup_query == NULL) {
+        og_set_error(err, err_len, "cannot allocate Keychain item lookup");
+        return -1;
+    }
+    CFDictionarySetValue(lookup_query, kSecReturnRef, kCFBooleanTrue);
+    CFDictionarySetValue(lookup_query, kSecMatchLimit, kSecMatchLimitOne);
+    CFTypeRef raw_item = NULL;
+    OSStatus status = og_sec_item_copy_matching(lookup_query, &raw_item);
+    CFRelease(lookup_query);
+    if (status == errSecItemNotFound) return 1;
+    if (status != errSecSuccess || raw_item == NULL) {
+        if (raw_item != NULL) CFRelease(raw_item);
+        og_set_keychain_osstatus_error(err, err_len, "load the existing Keychain item", status);
+        return -1;
+    }
+
+    SecKeychainItemRef item = (SecKeychainItemRef)raw_item;
+    if (og_item_has_caller_only_access(item, label, err, err_len) != 1) {
+        // A mismatched v2 ACL is treated as a conflicting item, never as a
+        // migration opportunity. In particular, do not call SecItemUpdate or
+        // SecKeychainItemSetAccess for an item that this build does not own.
+        CFRelease(raw_item);
+        return -1;
+    }
+
+    const void *item_values[] = {item};
+    CFArrayRef item_list = CFArrayCreate(NULL, item_values, 1, &kCFTypeArrayCallBacks);
+    CFMutableDictionaryRef update_query = CFDictionaryCreateMutableCopy(NULL, 0, base_query);
+    CFMutableDictionaryRef updates = CFDictionaryCreateMutable(NULL, 0,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    if (item_list == NULL || update_query == NULL || updates == NULL) {
+        if (item_list != NULL) CFRelease(item_list);
+        if (update_query != NULL) CFRelease(update_query);
+        if (updates != NULL) CFRelease(updates);
+        CFRelease(raw_item);
+        og_set_error(err, err_len, "cannot allocate the Keychain value update");
+        return -1;
+    }
+    CFDictionarySetValue(update_query, kSecMatchItemList, item_list);
+    CFDictionarySetValue(updates, kSecValueData, data);
+    status = og_sec_item_update(update_query, updates);
+    CFRelease(updates);
+    CFRelease(update_query);
+    CFRelease(item_list);
+    CFRelease(raw_item);
+    if (status != errSecSuccess) {
+        // SecItemUpdate commits the new bytes atomically. A failure therefore
+        // leaves the previous password value intact.
+        og_set_keychain_osstatus_error(err, err_len, "update the protected Keychain value", status);
+        return -1;
+    }
+    return 0;
 }
 
 static int og_keychain_store_for_service(const char *service_name, const char *account,
@@ -594,24 +1023,34 @@ static int og_keychain_store_for_service(const char *service_name, const char *a
     }
     CFMutableDictionaryRef query = og_keychain_query_for_service(service_name, account);
     CFDataRef data = CFDataCreate(NULL, secret, (CFIndex)secret_len);
-    CFMutableDictionaryRef updates = CFDictionaryCreateMutable(NULL, 0,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFStringRef label_string = CFStringCreateWithCString(NULL, label, kCFStringEncodingUTF8);
-    if (query == NULL || data == NULL || updates == NULL || label_string == NULL) {
+    if (query == NULL || data == NULL || label_string == NULL) {
         if (query != NULL) CFRelease(query);
         if (data != NULL) CFRelease(data);
-        if (updates != NULL) CFRelease(updates);
         if (label_string != NULL) CFRelease(label_string);
         og_set_error(err, err_len, "cannot allocate keychain query");
         return -1;
     }
 
-    // Never inherit the ACL of an existing item. A same-user process could
-    // pre-create the service/account pair with an extra trusted application;
-    // changing only kSecValueData would preserve that poisoned ACL. Create a
-    // fresh default access object for every store and replace the ACL and data
-    // in one SecItemUpdate transaction. Per SecAccessCreate, a NULL trusted
-    // list means only the application creating this access object.
+    int existing_result = og_keychain_update_existing_item(
+        query, data, label, err, err_len);
+    if (existing_result == 0) {
+        CFRelease(label_string);
+        CFRelease(data);
+        CFRelease(query);
+        return 0;
+    }
+    if (existing_result < 0) {
+        CFRelease(label_string);
+        CFRelease(data);
+        CFRelease(query);
+        return -1;
+    }
+
+    // Per SecAccessCreate, a NULL trusted list restricts a new item to the
+    // application creating it. Existing v2 items take the separate path above:
+    // their caller-only ACL is verified without modification, then only their
+    // password bytes are atomically updated.
     SecAccessRef access = NULL;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -619,90 +1058,56 @@ static int og_keychain_store_for_service(const char *service_name, const char *a
 #pragma clang diagnostic pop
     if (status != errSecSuccess || access == NULL) {
         CFRelease(label_string);
-        CFRelease(updates);
         CFRelease(data);
         CFRelease(query);
         og_set_osstatus_error(err, err_len, "create caller-only Keychain ACL", status);
         return -1;
     }
-    int fresh_access_check = og_access_is_caller_only(access, err, err_len);
+    int fresh_access_check = og_access_is_caller_only(
+        access, label, err, err_len);
     if (fresh_access_check != 1) {
         CFRelease(access);
         CFRelease(label_string);
-        CFRelease(updates);
         CFRelease(data);
         CFRelease(query);
         return -1;
     }
-    CFMutableDictionaryRef acl_update = CFDictionaryCreateMutable(NULL, 0,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    if (acl_update == NULL) {
+
+    CFMutableDictionaryRef item = CFDictionaryCreateMutableCopy(NULL, 0, query);
+    if (item == NULL) {
         CFRelease(access);
         CFRelease(label_string);
-        CFRelease(updates);
         CFRelease(data);
         CFRelease(query);
-        og_set_error(err, err_len, "cannot allocate Keychain ACL update");
+        og_set_error(err, err_len, "cannot allocate keychain item");
         return -1;
     }
-    CFDictionarySetValue(acl_update, kSecAttrAccess, access);
-    CFDictionarySetValue(updates, kSecValueData, data);
-    CFDictionarySetValue(updates, kSecAttrAccess, access);
-
-    // Harden an existing item before exposing the new value to it. Some macOS
-    // releases have accepted a combined kSecAttrAccess+kSecValueData update
-    // while retaining the old ACL. The ACL-only preflight plus read-back keeps
-    // a poisoned pre-seeded item from ever receiving password bytes. The
-    // subsequent combined update is the atomic data commit required for
-    // prior-value preservation.
-    int existing_access = og_query_item_has_caller_only_access(query, err, err_len);
-    if (existing_access == 1) {
-        status = SecItemUpdate(query, updates);
-    } else {
-        status = SecItemUpdate(query, acl_update);
-        if (status == errSecSuccess && og_query_item_has_caller_only_access(query, err, err_len) == 1) {
-            status = SecItemUpdate(query, updates);
-        } else if (status == errSecSuccess) {
+    CFDictionarySetValue(item, kSecAttrLabel, label_string);
+    CFDictionarySetValue(item, kSecAttrAccess, access);
+    CFDictionarySetValue(item, kSecValueData, data);
+    status = og_sec_item_add(item, NULL);
+    CFRelease(item);
+    if (status == errSecDuplicateItem) {
+        // Another process won the add race. Re-run the exact-reference update;
+        // it applies the same ACL proof and never falls back to a broad query.
+        existing_result = og_keychain_update_existing_item(
+            query, data, label, err, err_len);
+        if (existing_result == 0) status = errSecSuccess;
+        else if (existing_result > 0) {
+            og_set_error(err, err_len, "the duplicate Keychain item disappeared before it could be updated");
+            status = errSecItemNotFound;
+        } else {
             status = errSecAuthFailed;
         }
     }
-    if (status == errSecItemNotFound) {
-        CFMutableDictionaryRef item = CFDictionaryCreateMutableCopy(NULL, 0, query);
-        if (item == NULL) {
-            CFRelease(acl_update);
-            CFRelease(access);
-            CFRelease(label_string);
-            CFRelease(updates);
-            CFRelease(data);
-            CFRelease(query);
-            og_set_error(err, err_len, "cannot allocate keychain item");
-            return -1;
-        }
-        CFDictionarySetValue(item, kSecAttrLabel, label_string);
-        CFDictionarySetValue(item, kSecAttrAccess, access);
-        CFDictionarySetValue(item, kSecValueData, data);
-        status = SecItemAdd(item, NULL);
-        CFRelease(item);
-        if (status == errSecDuplicateItem) {
-            status = SecItemUpdate(query, acl_update);
-            if (status == errSecSuccess && og_query_item_has_caller_only_access(query, err, err_len) == 1) {
-                status = SecItemUpdate(query, updates);
-            } else if (status == errSecSuccess) {
-                status = errSecAuthFailed;
-            }
-        }
-    }
-    if (status == errSecSuccess && og_query_item_has_caller_only_access(query, err, err_len) != 1) {
-        status = errSecAuthFailed;
-    }
-    CFRelease(acl_update);
     CFRelease(access);
     CFRelease(label_string);
-    CFRelease(updates);
     CFRelease(data);
     CFRelease(query);
     if (status != errSecSuccess) {
-        og_set_osstatus_error(err, err_len, "store protected value in Keychain", status);
+        if (existing_result >= 0) {
+            og_set_keychain_osstatus_error(err, err_len, "store protected value in Keychain", status);
+        }
         return -1;
     }
     return 0;
@@ -710,7 +1115,7 @@ static int og_keychain_store_for_service(const char *service_name, const char *a
 
 int og_keychain_store(const char *account, const unsigned char *secret, size_t secret_len, char *err, size_t err_len) {
     return og_keychain_store_for_service(OG_KEYCHAIN_SERVICE, account, secret, secret_len,
-        "OsaGuard administrator password", err, err_len);
+        OG_KEYCHAIN_LABEL, err, err_len);
 }
 
 int og_keychain_load(const char *account, unsigned char **secret, size_t *secret_len, char *err, size_t err_len) {
@@ -725,40 +1130,42 @@ int og_keychain_load(const char *account, unsigned char **secret, size_t *secret
         og_set_error(err, err_len, "cannot allocate keychain query");
         return -1;
     }
-    if (og_query_item_has_caller_only_access(query, err, err_len) != 1) {
-        CFRelease(query);
-        return -1;
-    }
-    CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue);
-    CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
-    CFTypeRef result = NULL;
-    OSStatus status = SecItemCopyMatching(query, &result);
+    SecKeychainItemRef item = NULL;
+    int item_state = og_keychain_copy_verified_item(
+        query, OG_KEYCHAIN_LABEL, &item, err, err_len);
     CFRelease(query);
-    if (status != errSecSuccess || result == NULL) {
-        if (result != NULL) CFRelease(result);
-        og_set_osstatus_error(err, err_len, "load password from Keychain", status);
+    if (item_state != 1) {
+        if (item_state == 0) {
+            og_set_keychain_osstatus_error(err, err_len,
+                "load password from Keychain", errSecItemNotFound);
+        }
         return -1;
     }
-    if (CFGetTypeID(result) != CFDataGetTypeID()) {
-        CFRelease(result);
-        og_set_error(err, err_len, "Keychain result is not data");
+    CFDataRef data = NULL;
+    int data_state = og_keychain_copy_verified_item_data(
+        item, &data, "load password from Keychain", err, err_len);
+    CFRelease(item);
+    if (data_state != 1) {
+        if (data_state == 0) {
+            og_set_keychain_osstatus_error(err, err_len,
+                "load password from Keychain", errSecItemNotFound);
+        }
         return -1;
     }
-    CFDataRef data = (CFDataRef)result;
     CFIndex length = CFDataGetLength(data);
     if (length <= 0 || length > 4096) {
-        CFRelease(result);
+        CFRelease(data);
         og_set_error(err, err_len, "Keychain password has invalid length");
         return -1;
     }
     unsigned char *copy = calloc((size_t)length, 1);
     if (copy == NULL) {
-        CFRelease(result);
+        CFRelease(data);
         og_set_error(err, err_len, "cannot allocate password buffer");
         return -1;
     }
     memcpy(copy, CFDataGetBytePtr(data), (size_t)length);
-    CFRelease(result);
+    CFRelease(data);
     *secret = copy;
     *secret_len = (size_t)length;
     return 0;
@@ -774,28 +1181,15 @@ int og_keychain_exists(const char *account, char *err, size_t err_len) {
         og_set_error(err, err_len, "cannot allocate keychain existence query");
         return -1;
     }
-    CFDictionarySetValue(query, kSecReturnAttributes, kCFBooleanTrue);
-    CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
-    CFTypeRef result = NULL;
-    OSStatus status = SecItemCopyMatching(query, &result);
-    if (result != NULL) CFRelease(result);
-    if (status == errSecSuccess) {
-        CFDictionaryRemoveValue(query, kSecReturnAttributes);
-        CFDictionaryRemoveValue(query, kSecMatchLimit);
-        int caller_only = og_query_item_has_caller_only_access(query, err, err_len);
-        CFRelease(query);
-        // A metadata match with a different trusted-application ACL is not a
-        // transport failure. Report it separately so a newly signed/ad-hoc
-        // application can stay fail-closed and ask the user to re-enrol the
-        // password instead of making the whole dashboard fail to start.
-        if (caller_only == 1) return 1;
-        if (caller_only == 0) return 2;
-        return -1;
-    }
+    SecKeychainItemRef item = NULL;
+    int item_state = og_keychain_copy_verified_item(
+        query, OG_KEYCHAIN_LABEL, &item, err, err_len);
     CFRelease(query);
-    if (status == errSecItemNotFound) return 0;
-    og_set_osstatus_error(err, err_len, "query OsaGuard Keychain item metadata", status);
-    return -1;
+    if (item != NULL) CFRelease(item);
+    // A metadata match with a different complete access template is not a
+    // transport failure. Report it separately so a newly signed/ad-hoc
+    // application can stay fail-closed and ask the user to re-enrol.
+    return item_state;
 }
 
 int og_keychain_delete(const char *account, char *err, size_t err_len) {
@@ -808,13 +1202,11 @@ int og_keychain_delete(const char *account, char *err, size_t err_len) {
         og_set_error(err, err_len, "cannot allocate keychain query");
         return -1;
     }
-    OSStatus status = SecItemDelete(query);
+    int result = og_keychain_delete_verified_item(
+        query, OG_KEYCHAIN_LABEL,
+        "delete verified password from Keychain", err, err_len);
     CFRelease(query);
-    if (status != errSecSuccess && status != errSecItemNotFound) {
-        og_set_osstatus_error(err, err_len, "delete password from Keychain", status);
-        return -1;
-    }
-    return 0;
+    return result;
 }
 
 int og_keychain_delete_all(char *err, size_t err_len) {
@@ -833,12 +1225,12 @@ int og_keychain_delete_all(char *err, size_t err_len) {
     CFDictionarySetValue(query, kSecReturnRef, kCFBooleanTrue);
     CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitAll);
     CFTypeRef raw_items = NULL;
-    OSStatus status = SecItemCopyMatching(query, &raw_items);
+    OSStatus status = og_sec_item_copy_matching(query, &raw_items);
     CFRelease(query);
     if (status == errSecItemNotFound) return 0;
     if (status != errSecSuccess || raw_items == NULL) {
         if (raw_items != NULL) CFRelease(raw_items);
-        og_set_osstatus_error(err, err_len, "list OsaGuard passwords for deletion", status);
+        og_set_keychain_osstatus_error(err, err_len, "list OsaGuard passwords for deletion", status);
         return -1;
     }
     if (CFGetTypeID(raw_items) != CFArrayGetTypeID() || CFArrayGetCount((CFArrayRef)raw_items) == 0) {
@@ -849,7 +1241,8 @@ int og_keychain_delete_all(char *err, size_t err_len) {
     CFArrayRef items = (CFArrayRef)raw_items;
     for (CFIndex index = 0; index < CFArrayGetCount(items); index++) {
         CFTypeRef item = CFArrayGetValueAtIndex(items, index);
-        int caller_only = og_item_has_caller_only_access((SecKeychainItemRef)item, err, err_len);
+        int caller_only = og_item_has_caller_only_access(
+            (SecKeychainItemRef)item, OG_KEYCHAIN_LABEL, err, err_len);
         if (caller_only == 1) continue;
         if (caller_only == 0) {
             og_set_error(err, err_len, "refusing to delete an OsaGuard-service Keychain item with an unrecognized ACL");
@@ -866,11 +1259,11 @@ int og_keychain_delete_all(char *err, size_t err_len) {
     }
     CFDictionarySetValue(delete_query, kSecClass, kSecClassGenericPassword);
     CFDictionarySetValue(delete_query, kSecMatchItemList, items);
-    status = SecItemDelete(delete_query);
+    status = og_sec_item_delete(delete_query);
     CFRelease(delete_query);
     CFRelease(raw_items);
     if (status != errSecSuccess && status != errSecItemNotFound) {
-        og_set_osstatus_error(err, err_len, "delete verified OsaGuard passwords from Keychain", status);
+        og_set_keychain_osstatus_error(err, err_len, "delete verified OsaGuard passwords from Keychain", status);
         return -1;
     }
     return 0;
@@ -878,7 +1271,7 @@ int og_keychain_delete_all(char *err, size_t err_len) {
 
 int og_integrity_state_store(const unsigned char *state, size_t state_len, char *err, size_t err_len) {
     return og_keychain_store_for_service(OG_INTEGRITY_SERVICE, OG_INTEGRITY_ACCOUNT,
-        state, state_len, "OsaGuard protected product state", err, err_len);
+        state, state_len, OG_INTEGRITY_LABEL, err, err_len);
 }
 
 // Returns 1 when a state item exists, 0 when absent, and -1 on error. The
@@ -895,66 +1288,35 @@ int og_integrity_state_load(unsigned char **state, size_t *state_len, char *err,
         og_set_error(err, err_len, "cannot allocate integrity state query");
         return -1;
     }
-    CFMutableDictionaryRef existence_query = CFDictionaryCreateMutableCopy(NULL, 0, query);
-    if (existence_query == NULL) {
-        CFRelease(query);
-        og_set_error(err, err_len, "cannot allocate integrity state existence query");
-        return -1;
-    }
-    CFDictionarySetValue(existence_query, kSecReturnAttributes, kCFBooleanTrue);
-    CFDictionarySetValue(existence_query, kSecMatchLimit, kSecMatchLimitOne);
-    CFTypeRef existence_result = NULL;
-    OSStatus existence_status = SecItemCopyMatching(existence_query, &existence_result);
-    CFRelease(existence_query);
-    if (existence_result != NULL) CFRelease(existence_result);
-    if (existence_status == errSecItemNotFound) {
-        CFRelease(query);
-        return 0;
-    }
-    if (existence_status != errSecSuccess) {
-        CFRelease(query);
-        og_set_osstatus_error(err, err_len, "query protected product state", existence_status);
-        return -1;
-    }
-    int access_state = og_query_item_has_caller_only_access(query, err, err_len);
-    if (access_state != 1) {
-        CFRelease(query);
+    SecKeychainItemRef item = NULL;
+    int item_state = og_keychain_copy_verified_item(
+        query, OG_INTEGRITY_LABEL, &item, err, err_len);
+    CFRelease(query);
+    if (item_state != 1) {
         // Keep the protected state unread and distinguish an old/foreign ACL
         // from an actual Keychain failure. Callers must never treat 2 as an
         // acknowledged or enabled state.
-        return access_state == 0 ? 2 : -1;
+        return item_state;
     }
-    CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue);
-    CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
-    CFTypeRef result = NULL;
-    OSStatus status = SecItemCopyMatching(query, &result);
-    CFRelease(query);
-    if (status == errSecItemNotFound) return 0;
-    if (status != errSecSuccess || result == NULL) {
-        if (result != NULL) CFRelease(result);
-        og_set_osstatus_error(err, err_len, "load protected product state", status);
-        return -1;
-    }
-    if (CFGetTypeID(result) != CFDataGetTypeID()) {
-        CFRelease(result);
-        og_set_error(err, err_len, "protected product state is not data");
-        return -1;
-    }
-    CFDataRef data = (CFDataRef)result;
+    CFDataRef data = NULL;
+    int data_state = og_keychain_copy_verified_item_data(
+        item, &data, "load protected product state", err, err_len);
+    CFRelease(item);
+    if (data_state != 1) return data_state;
     CFIndex length = CFDataGetLength(data);
     if (length <= 0 || length > 64) {
-        CFRelease(result);
+        CFRelease(data);
         og_set_error(err, err_len, "protected product state has invalid length");
         return -1;
     }
     unsigned char *copy = calloc((size_t)length, 1);
     if (copy == NULL) {
-        CFRelease(result);
+        CFRelease(data);
         og_set_error(err, err_len, "cannot allocate protected state buffer");
         return -1;
     }
     memcpy(copy, CFDataGetBytePtr(data), (size_t)length);
-    CFRelease(result);
+    CFRelease(data);
     *state = copy;
     *state_len = (size_t)length;
     return 1;
@@ -966,13 +1328,11 @@ int og_integrity_state_delete(char *err, size_t err_len) {
         og_set_error(err, err_len, "cannot allocate integrity state delete query");
         return -1;
     }
-    OSStatus status = SecItemDelete(query);
+    int result = og_keychain_delete_verified_item(
+        query, OG_INTEGRITY_LABEL,
+        "delete verified protected product state", err, err_len);
     CFRelease(query);
-    if (status != errSecSuccess && status != errSecItemNotFound) {
-        og_set_osstatus_error(err, err_len, "delete protected product state", status);
-        return -1;
-    }
-    return 0;
+    return result;
 }
 
 // Test-only ACL introspection used by the opt-in Keychain integration test.
@@ -991,22 +1351,19 @@ int og_integrity_state_acl_trusts_path_for_testing(const char *path, char *err, 
     CFDictionarySetValue(query, kSecReturnRef, kCFBooleanTrue);
     CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
     CFTypeRef raw_item = NULL;
-    OSStatus status = SecItemCopyMatching(query, &raw_item);
+    OSStatus status = og_sec_item_copy_matching(query, &raw_item);
     CFRelease(query);
     if (status != errSecSuccess || raw_item == NULL) {
         if (raw_item != NULL) CFRelease(raw_item);
-        og_set_osstatus_error(err, err_len, "load protected state Keychain reference", status);
+        og_set_keychain_osstatus_error(err, err_len, "load protected state Keychain reference", status);
         return -1;
     }
     SecAccessRef access = NULL;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    status = SecKeychainItemCopyAccess((SecKeychainItemRef)raw_item, &access);
-#pragma clang diagnostic pop
+    status = og_keychain_item_copy_access_noninteractive((SecKeychainItemRef)raw_item, &access);
     CFRelease(raw_item);
     if (status != errSecSuccess || access == NULL) {
         if (access != NULL) CFRelease(access);
-        og_set_osstatus_error(err, err_len, "copy protected state ACL", status);
+        og_set_keychain_osstatus_error(err, err_len, "copy protected state ACL", status);
         return -1;
     }
 #pragma clang diagnostic push
@@ -1057,7 +1414,7 @@ int og_integrity_state_acl_trusts_path_for_testing(const char *path, char *err, 
             if (applications != NULL) CFRelease(applications);
             CFRelease(expected_data);
             CFRelease(acls);
-            og_set_osstatus_error(err, err_len, "inspect protected state decrypt ACL", status);
+            og_set_keychain_osstatus_error(err, err_len, "inspect protected state decrypt ACL", status);
             return -1;
         }
         if (applications != NULL) {

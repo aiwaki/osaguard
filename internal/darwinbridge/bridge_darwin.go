@@ -69,6 +69,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 	"unsafe"
@@ -78,6 +79,7 @@ const maxOsaScriptProcesses = 64
 
 var ErrPasswordPromptCanceled = errors.New("password entry canceled")
 var ErrKeychainItemNeedsReenrollment = errors.New("keychain item belongs to a different application identity")
+var ErrKeychainInteractionNotAllowed = errors.New("keychain operation requires forbidden user interaction")
 
 type KeychainItemState string
 
@@ -553,5 +555,20 @@ func bridgeError(buf []C.char) error {
 	if len(buf) == 0 || buf[0] == 0 {
 		return errors.New("macOS bridge operation failed")
 	}
-	return errors.New(C.GoString(&buf[0]))
+	return classifyBridgeError(C.GoString(&buf[0]))
+}
+
+func classifyBridgeError(message string) error {
+	const interactionCode = "keychain_interaction_not_allowed:"
+	const conflictCode = "keychain_access_conflict:"
+	switch {
+	case strings.HasPrefix(message, interactionCode):
+		return fmt.Errorf("keychain_interaction_not_allowed: %w: %s", ErrKeychainInteractionNotAllowed,
+			strings.TrimSpace(strings.TrimPrefix(message, interactionCode)))
+	case strings.HasPrefix(message, conflictCode):
+		return fmt.Errorf("keychain_access_conflict: %w: %s", ErrKeychainItemNeedsReenrollment,
+			strings.TrimSpace(strings.TrimPrefix(message, conflictCode)))
+	default:
+		return errors.New(message)
+	}
 }

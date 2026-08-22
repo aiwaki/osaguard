@@ -203,31 +203,21 @@ test("cryptographically verifies a Tauri updater signature", async () => {
     const updaterSignature = makeUpdaterSignature(data, archiveName);
     await writeFile(archivePath, data);
     await writeFile(signaturePath, updaterSignature.signature);
+    const publicKeyPath = join(directory, "updater.pub");
+    await writeFile(publicKeyPath, `${updaterSignature.publicKey}\n`);
 
     const verified = spawnSync(
       process.execPath,
-      [verifySignatureScript, archivePath, signaturePath],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          OSAGUARD_UPDATER_PUBLIC_KEY: updaterSignature.publicKey,
-        },
-      },
+      [verifySignatureScript, archivePath, signaturePath, publicKeyPath],
+      { encoding: "utf8" },
     );
     assert.equal(verified.status, 0, verified.stderr);
 
     await writeFile(archivePath, "tampered updater archive");
     const rejected = spawnSync(
       process.execPath,
-      [verifySignatureScript, archivePath, signaturePath],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          OSAGUARD_UPDATER_PUBLIC_KEY: updaterSignature.publicKey,
-        },
-      },
+      [verifySignatureScript, archivePath, signaturePath, publicKeyPath],
+      { encoding: "utf8" },
     );
     assert.notEqual(rejected.status, 0);
     assert.match(rejected.stderr, /signature verification failed/);

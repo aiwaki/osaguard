@@ -2535,14 +2535,19 @@ dependencies = [
 
 [[package]]
 name = "osaguard-tray"
-version = "0.1.2"
+version = "0.1.3-preview.1"
 dependencies = [
  "cc",
+ "flate2",
  "libc",
  "plist",
+ "reqwest",
+ "rustls",
+ "semver",
  "serde",
  "serde_json",
  "sys-locale",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
@@ -2550,6 +2555,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "tempfile",
  "tokio",
  "trash",
 ]

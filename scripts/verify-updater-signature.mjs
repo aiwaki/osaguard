@@ -8,16 +8,27 @@ import {
 } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const [archivePath, signaturePath] = process.argv.slice(2);
-const encodedPublicKey = process.env.OSAGUARD_UPDATER_PUBLIC_KEY?.trim();
+const [archivePath, signaturePath, publicKeyArgument] = process.argv.slice(2);
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const committedPublicKeyPath = join(
+  dirname(scriptDirectory),
+  "config",
+  "osaguard-preview-updater.pub",
+);
+const publicKeyPath = publicKeyArgument
+  ? resolve(publicKeyArgument)
+  : committedPublicKeyPath;
 
-if (!archivePath || !signaturePath || !encodedPublicKey) {
+if (!archivePath || !signaturePath) {
   console.error(
-    "Usage: OSAGUARD_UPDATER_PUBLIC_KEY=... verify-updater-signature.mjs <archive> <signature-file>",
+    "Usage: verify-updater-signature.mjs <archive> <signature-file> [public-key-file]",
   );
   process.exit(1);
 }
+const encodedPublicKey = (await readFile(publicKeyPath, "utf8")).trim();
 
 function decodeOuterBase64(encoded, label) {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
