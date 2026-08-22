@@ -6,7 +6,7 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-08-13
+## [0.1.0] - 2026-08-22
 
 ### Added
 
@@ -21,6 +21,8 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Tauri updater signatures and immutable update metadata.
 - a release identity manifest recording the `osaguard-tray` app executable's
   CodeDirectory, CDHash, and SHA-256 for both architectures.
+- a one-time, Keychain-free bootstrap for the permanent release certificate and
+  Tauri updater key, stored outside the source checkout.
 
 ### Changed
 
@@ -33,6 +35,9 @@ will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already running in the configured user account.
 - password input is kept outside Tauri JavaScript, command arguments, environment
   variables, logs, and the clipboard.
+- release signing authenticates the certificate pin in an isolated temporary
+  Keychain before it changes the runner's Keychain search list; it does not add
+  user or system trust settings.
 
 Public DMGs use OsaGuard's permanent self-signed code-signing certificate and
 are not notarized by Apple. The first installed release is manual (Finder

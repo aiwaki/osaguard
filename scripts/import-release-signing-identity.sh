@@ -1,6 +1,36 @@
 #!/bin/bash
 set -euo pipefail
 
+count_matching_code_signing_identities() {
+  local identity=$1
+  /usr/bin/awk -v identity="$identity" '
+    /^[[:space:]]*Matching identities[[:space:]]*$/ {
+      in_matching_block = 1
+      saw_matching_block = 1
+      next
+    }
+    /^[[:space:]]*Valid identities only[[:space:]]*$/ {
+      in_matching_block = 0
+      next
+    }
+    in_matching_block && $0 ~ /^[[:space:]]*[0-9]+\)/ && index($0, "\"" identity "\"") {
+      count++
+    }
+    END {
+      if (!saw_matching_block) {
+        exit 2
+      }
+      print count + 0
+    }
+  '
+}
+
+# Permit the parser to be exercised without creating a Keychain or reading
+# release secrets. Normal execution continues below.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
+
 required_environment=(
   GITHUB_ENV
   RUNNER_TEMP
@@ -92,11 +122,48 @@ printf '%s' "$OSAGUARD_CODE_SIGNING_P12_BASE64" | /usr/bin/base64 -D > "$p12_pat
 /usr/bin/security import "$p12_path" \
   -k "$keychain_path" \
   -P "$OSAGUARD_CODE_SIGNING_P12_PASSWORD" \
-  -T /usr/bin/codesign \
-  -T /usr/bin/security >/dev/null
+  -A \
+  -t cert \
+  -f pkcs12 >/dev/null
+/usr/bin/security find-certificate -c "$signing_identity" -p "$keychain_path" > "$certificate_path"
+if [[ $(/usr/bin/grep -c '^-----BEGIN CERTIFICATE-----$' "$certificate_path") -ne 1 ]]; then
+  echo "The imported identity does not resolve to exactly one certificate" >&2
+  exit 1
+fi
+certificate_subject=$(/usr/bin/openssl x509 -in "$certificate_path" -noout -subject -nameopt RFC2253)
+certificate_subject=${certificate_subject#subject=}
+if [[ ",$certificate_subject," != *,CN="$signing_identity",* ]]; then
+  echo "The imported certificate common name does not match the fixed release identity" >&2
+  exit 1
+fi
+actual_fingerprint=$(/usr/bin/openssl x509 -in "$certificate_path" -noout -fingerprint -sha256)
+actual_fingerprint=${actual_fingerprint#*=}
+actual_fingerprint=$(printf '%s' "$actual_fingerprint" | /usr/bin/tr -d ':[:space:]' | /usr/bin/tr '[:lower:]' '[:upper:]')
+if [[ "$actual_fingerprint" != "$expected_fingerprint" ]]; then
+  echo "The imported code-signing certificate does not match the configured SHA-256 fingerprint" >&2
+  exit 1
+fi
+
+/usr/bin/openssl x509 -in "$certificate_path" -noout -checkend 0 >/dev/null
+
+# Keep validation and identity lookup confined to the disposable keychain. Do
+# not use `security add-trusted-cert`: its Trust Settings update is user- or
+# admin-domain scoped even when `-k` names a particular keychain. The fixed
+# SHA-256 fingerprint is the trust decision for this self-signed certificate.
+identity_listing=$(/usr/bin/security find-identity -p codesigning "$keychain_path")
+matching_identity_count=$(count_matching_code_signing_identities "$signing_identity" <<< "$identity_listing") || {
+  echo "Could not parse matching code-signing identities in the temporary Keychain" >&2
+  exit 1
+}
+if [[ "$matching_identity_count" != "1" ]]; then
+  echo "The imported P12 does not contain exactly one '$signing_identity' code-signing identity" >&2
+  exit 1
+fi
+
 /usr/bin/security set-key-partition-list \
   -S apple-tool:,apple: \
   -s \
+  -t private \
   -k "$keychain_password" \
   "$keychain_path" >/dev/null 2>&1
 
@@ -127,32 +194,6 @@ done
 /usr/bin/security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}"
 search_list_changed=true
 
-identity_listing=$(/usr/bin/security find-identity -p codesigning "$keychain_path")
-if [[ $(/usr/bin/grep -Fc "\"$signing_identity\"" <<< "$identity_listing") -ne 1 ]]; then
-  echo "The imported P12 does not contain exactly one '$signing_identity' code-signing identity" >&2
-  exit 1
-fi
-
-/usr/bin/security find-certificate -c "$signing_identity" -p "$keychain_path" > "$certificate_path"
-if [[ $(/usr/bin/grep -c '^-----BEGIN CERTIFICATE-----$' "$certificate_path") -ne 1 ]]; then
-  echo "The imported identity does not resolve to exactly one certificate" >&2
-  exit 1
-fi
-certificate_subject=$(/usr/bin/openssl x509 -in "$certificate_path" -noout -subject -nameopt RFC2253)
-certificate_subject=${certificate_subject#subject=}
-if [[ ",$certificate_subject," != *,CN="$signing_identity",* ]]; then
-  echo "The imported certificate common name does not match the fixed release identity" >&2
-  exit 1
-fi
-actual_fingerprint=$(/usr/bin/openssl x509 -in "$certificate_path" -noout -fingerprint -sha256)
-actual_fingerprint=${actual_fingerprint#*=}
-actual_fingerprint=$(printf '%s' "$actual_fingerprint" | /usr/bin/tr -d ':[:space:]' | /usr/bin/tr '[:lower:]' '[:upper:]')
-if [[ "$actual_fingerprint" != "$expected_fingerprint" ]]; then
-  echo "The imported code-signing certificate does not match the configured SHA-256 fingerprint" >&2
-  exit 1
-fi
-
-/usr/bin/openssl x509 -in "$certificate_path" -noout -checkend 0 >/dev/null
 /bin/rm -f -- "$p12_path" "$certificate_path"
 {
   echo "OSAGUARD_CODE_SIGNING_KEYCHAIN=$keychain_path"

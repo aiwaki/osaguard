@@ -14,31 +14,36 @@ therefore remains a manual Finder **right-click → Open** flow.
 
 ## One-time repository setup
 
-1. In Keychain Access, create a certificate with the exact name
-   `OsaGuard Release Code Signing`, identity type **Self Signed Root**, and
-   certificate type **Code Signing**. Choose a long validity period and retain
-   the original private key securely.
-2. Export that certificate and private key together as a password-protected P12.
-   Back up the P12 and its password in an access-controlled secret store. Never
-   create a second certificate with the same display name.
-3. Export the public certificate and calculate its SHA-256 fingerprint, with
-   punctuation removed. The fingerprint is public; it is the immutable identity
-   pin used by release qualification.
-4. Generate one permanent Tauri updater keypair with
-   `npm exec tauri signer generate` from `app-tauri/`. Back up its private key
-   and password separately. Losing it ends the existing updater channel.
-5. In GitHub, create an Actions Environment named `release`. Restrict its
-   deployment branches to `main`, configure at least one required reviewer, and
-   enable **Prevent self-reviews**. The workflows only reference this
-   environment; GitHub does not create or protect it from YAML alone.
-6. Configure these GitHub Actions **Environment secrets** in `release`:
+1. Generate the permanent signing P12 and Tauri updater key once, outside the
+   source checkout:
+
+   ```bash
+   scripts/bootstrap-release-credentials.sh \
+     "$HOME/Library/Application Support/OsaGuard/release-credentials"
+   ```
+
+   It creates a fresh mode-0700 directory, uses OpenSSL for a self-signed
+   **Code Signing** certificate named `OsaGuard Release Code Signing`, and uses
+   the local Tauri CLI for a password-protected updater key. It does **not**
+   access, create, unlock, or change the user's login Keychain or Keychain
+   search list. Keep the resulting directory backed up and outside every source
+   checkout; losing the updater private key ends the existing updater channel.
+2. Use `github-public-values.env` from that directory for the two public
+   identity values. The certificate fingerprint is public; it is the immutable
+   identity pin used by release qualification.
+3. Configure the GitHub Actions Environment named `release`. For this
+   single-maintainer repository it is restricted to `main`; the separate draft
+   and publish workflows require two explicit manual dispatches. A second
+   maintainer can later be added as a required reviewer with self-review
+   prevention, but a second account is not required to publish OsaGuard.
+4. Configure these GitHub Actions **Environment secrets** in `release`:
 
    - `OSAGUARD_CODE_SIGNING_P12_BASE64`: base64 of the complete P12;
    - `OSAGUARD_CODE_SIGNING_P12_PASSWORD`: the P12 export password;
    - `TAURI_SIGNING_PRIVATE_KEY`;
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 
-7. Configure these non-secret **repository variables**:
+5. Configure these non-secret **repository variables**:
 
    - `OSAGUARD_UPDATER_PUBLIC_KEY`: the Tauri public key. It is intentionally
      public and is embedded in every public app build; and
@@ -47,13 +52,18 @@ therefore remains a manual Finder **right-click → Open** flow.
 
 The ordinary verification job receives only the updater public key. Only the
 protected `release` build job receives private signing material. It decodes the
-P12 only inside a mode-private temporary directory,
-imports it into a temporary Keychain, grants only Apple signing tools access,
-and deletes the P12 immediately. After a verified search-list restoration, an
-`always()` cleanup step deletes the temporary Keychain. If restoration fails,
-the job deliberately preserves the Keychain and recovery snapshot instead of
-destroying the evidence needed to repair the runner. Commands never print the
-P12 or password.
+P12 only inside a mode-private temporary directory and imports it into a
+temporary Keychain using macOS's non-interactive broad-access mode. That is
+deliberately broader than an app-specific ACL, but exists only on the fresh,
+isolated GitHub-hosted runner and is deleted with the Keychain; the partition
+list still restricts the intended Apple signing-tool path. The job validates the
+fixed certificate fingerprint and expiry there and deletes the P12 immediately.
+It does not write macOS user, admin, or system Trust Settings. Only after that
+validation does it snapshot and extend the runner's Keychain search list. After
+a verified restoration, an `always()` cleanup step deletes the temporary
+Keychain. If restoration fails, the job deliberately preserves the Keychain and
+recovery snapshot instead of destroying the evidence needed to repair the
+runner. Commands never print the P12 or password.
 
 The fixed identity name and signing model live in
 `scripts/release-signing.json`. Changing the certificate or fingerprint is an
@@ -85,14 +95,17 @@ passphrase, and the Tauri updater private key must all be treated as exposed to
 that TCB.
 
 The import script keeps P12 files mode-0600 and deletes the P12 immediately
-after import. It snapshots the runner's user Keychain search list before adding
-the temporary signing Keychain. If restoration fails, it intentionally preserves
-both the temporary Keychain and the mode-0600 snapshot, fails the job, and logs
-the exact recovery command. Workflow cleanup follows the same rule: it deletes
-neither file until it has verified that the original ordered search list was
-restored. A stronger future model must use a signing service or managed key that
-can import or use the identity without exposing a P12 passphrase in process
-arguments.
+after import. Its broad-access import is acceptable only because the Keychain
+is newly created in a fresh GitHub-hosted runner; it must not be reused on a
+local, self-hosted, shared, or long-lived machine. It validates the fingerprint,
+certificate expiry, and private-key pairing in that disposable Keychain before
+it snapshots the runner's user Keychain search list. If restoration fails, it
+intentionally preserves both the temporary Keychain and the mode-0600 snapshot,
+fails the job, and logs the exact recovery command. Workflow cleanup follows the
+same rule: it deletes neither file until it has verified that the original
+ordered search list was restored. A stronger future model must use a signing
+service or managed key that can import or use the identity without exposing a
+P12 passphrase in process arguments.
 
 ## Artifact contract
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,24 @@ import test from "node:test";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryDirectory = dirname(scriptsDirectory);
+const importerPath = join(scriptsDirectory, "import-release-signing-identity.sh");
+const signingIdentity = "OsaGuard Release Code Signing";
+
+function matchingIdentityCount(listing) {
+  const result = spawnSync(
+    "/bin/bash",
+    [
+      "-c",
+      'source "$1"; count_matching_code_signing_identities "$2"',
+      "bash",
+      importerPath,
+      signingIdentity,
+    ],
+    { encoding: "utf8", input: listing },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
 
 test("release signing snapshots and restores the exact user Keychain search list", async () => {
   const [importScript, restoreScript, workflow] = await Promise.all([
@@ -51,4 +70,70 @@ test("release signing snapshots and restores the exact user Keychain search list
     /security delete-keychain|\/bin\/rm -f/,
   );
   assert.match(cleanup.slice(verifiedRestore), /security delete-keychain/);
+});
+
+test("release signing authenticates the P12 in its ephemeral keychain before changing the user search list", async () => {
+  const importScript = await readFile(
+    join(scriptsDirectory, "import-release-signing-identity.sh"),
+    "utf8",
+  );
+
+  const certificateLookup = importScript.indexOf(
+    '/usr/bin/security find-certificate -c "$signing_identity" -p "$keychain_path"',
+  );
+  const fingerprintCheck = importScript.indexOf(
+    'if [[ "$actual_fingerprint" != "$expected_fingerprint" ]]',
+  );
+  const expiryCheck = importScript.indexOf(
+    '/usr/bin/openssl x509 -in "$certificate_path" -noout -checkend 0',
+  );
+  const identityLookup = importScript.indexOf(
+    'identity_listing=$(/usr/bin/security find-identity -p codesigning "$keychain_path")',
+  );
+  const snapshotSearchList = importScript.indexOf(
+    '/usr/bin/security list-keychains -d user > "$search_list_snapshot"',
+  );
+  const mutateSearchList = importScript.indexOf(
+    '/usr/bin/security list-keychains -d user -s "$keychain_path"',
+  );
+
+  assert.ok(certificateLookup >= 0);
+  assert.ok(fingerprintCheck > certificateLookup);
+  assert.ok(expiryCheck > fingerprintCheck);
+  assert.ok(identityLookup > expiryCheck);
+  assert.ok(snapshotSearchList > identityLookup);
+  assert.ok(mutateSearchList > snapshotSearchList);
+  assert.match(importScript, /not use `security add-trusted-cert`/);
+  assert.doesNotMatch(importScript, /^\s*\/usr\/bin\/security add-trusted-cert/m);
+  assert.match(
+    importScript,
+    /security import "\$p12_path"[\s\S]*?-A[\s\S]*?-t cert[\s\S]*?-f pkcs12/,
+  );
+  assert.match(importScript, /set-key-partition-list[\s\S]*?apple-tool:,apple:[\s\S]*?-t private/);
+  assert.doesNotMatch(importScript, /security import[\s\S]*?\n\s*-T \/usr\/bin\/(?:codesign|security)/);
+});
+
+test("release signing counts only matching identities regardless of Trust Settings", () => {
+  const untrusted = `
+Policy: Code Signing
+  Matching identities
+  1) 0123456789ABCDEF0123456789ABCDEF01234567 "${signingIdentity}"
+     1 identities found
+
+  Valid identities only
+     0 valid identities found
+`;
+  const globallyTrusted = `
+Policy: Code Signing
+  Matching identities
+  1) 0123456789ABCDEF0123456789ABCDEF01234567 "${signingIdentity}"
+     1 identities found
+
+  Valid identities only
+  1) 0123456789ABCDEF0123456789ABCDEF01234567 "${signingIdentity}"
+     1 valid identities found
+`;
+
+  assert.equal(matchingIdentityCount(untrusted), "1");
+  assert.equal(matchingIdentityCount(globallyTrusted), "1");
 });
