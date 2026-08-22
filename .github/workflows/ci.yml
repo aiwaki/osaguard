@@ -38,7 +38,6 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # v1
         with:
-          toolchain: 1.89.0
           components: clippy,rustfmt
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
