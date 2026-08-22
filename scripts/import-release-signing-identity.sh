@@ -130,12 +130,6 @@ if [[ $(/usr/bin/grep -c '^-----BEGIN CERTIFICATE-----$' "$certificate_path") -n
   echo "The imported identity does not resolve to exactly one certificate" >&2
   exit 1
 fi
-certificate_subject=$(/usr/bin/openssl x509 -in "$certificate_path" -noout -subject -nameopt RFC2253)
-certificate_subject=${certificate_subject#subject=}
-if [[ ",$certificate_subject," != *,CN="$signing_identity",* ]]; then
-  echo "The imported certificate common name does not match the fixed release identity" >&2
-  exit 1
-fi
 actual_fingerprint=$(/usr/bin/openssl x509 -in "$certificate_path" -noout -fingerprint -sha256)
 actual_fingerprint=${actual_fingerprint#*=}
 actual_fingerprint=$(printf '%s' "$actual_fingerprint" | /usr/bin/tr -d ':[:space:]' | /usr/bin/tr '[:lower:]' '[:upper:]')
@@ -150,6 +144,9 @@ fi
 # not use `security add-trusted-cert`: its Trust Settings update is user- or
 # admin-domain scoped even when `-k` names a particular keychain. The fixed
 # SHA-256 fingerprint is the trust decision for this self-signed certificate.
+# The exact quoted identity in the following Keychain listing is the portable
+# common-name check; OpenSSL's human-readable subject formatting varies by
+# runner image.
 identity_listing=$(/usr/bin/security find-identity -p codesigning "$keychain_path")
 matching_identity_count=$(count_matching_code_signing_identities "$signing_identity" <<< "$identity_listing") || {
   echo "Could not parse matching code-signing identities in the temporary Keychain" >&2
