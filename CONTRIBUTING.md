@@ -16,7 +16,7 @@ Issues and pull requests are welcome in English or Russian.
 ## Development setup
 
 Development currently requires macOS 13 or later, Xcode Command Line Tools, Go
-1.23+, Rust 1.88, and a current Node.js/npm version supported by Tauri 2.
+1.23+, Rust 1.89, and a current Node.js/npm version supported by Tauri 2.
 
 ```sh
 make check

@@ -231,7 +231,7 @@ Accessibility и переместит
 - macOS 13 или новее;
 - Xcode Command Line Tools;
 - Go 1.23 или новее с cgo;
-- Rust 1.88;
+- Rust 1.89;
 - актуальные Node.js и npm, поддерживаемые Tauri 2.
 
 Проверка и сборка локального приложения:

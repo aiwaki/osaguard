@@ -225,7 +225,7 @@ Requirements:
 - macOS 13 or later;
 - Xcode Command Line Tools;
 - Go 1.23 or later with cgo;
-- Rust 1.88;
+- Rust 1.89;
 - a current Node.js and npm release supported by Tauri 2.
 
 Run the checks and build the local app:
