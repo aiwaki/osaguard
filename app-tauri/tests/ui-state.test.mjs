@@ -2,11 +2,55 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  bootstrapRuntime,
   normalizeUpdateStatus,
   passwordOutcome,
   updateActionInProgress,
   updateIsInstallable,
 } from "../src/ui-state.mjs";
+
+test("bootstrap loads status before subscribing and reports success", async () => {
+  const calls = [];
+  const ready = [];
+  const errors = [];
+  const result = await bootstrapRuntime({
+    loadStatus: async () => calls.push("status"),
+    subscribe: async (event) => calls.push(event),
+    subscriptions: [
+      { event: "first", handler: () => {} },
+      { event: "second", handler: () => {} },
+    ],
+    onReady: () => ready.push(true),
+    onError: (error) => errors.push(error),
+  });
+
+  assert.equal(result, true);
+  assert.equal(calls[0], "status");
+  assert.deepEqual(new Set(calls.slice(1)), new Set(["first", "second"]));
+  assert.deepEqual(ready, [true]);
+  assert.deepEqual(errors, []);
+});
+
+test("bootstrap turns startup failures into a visible error state", async () => {
+  const failure = new Error("event permission denied");
+  const errors = [];
+  let ready = false;
+  const result = await bootstrapRuntime({
+    loadStatus: async () => {},
+    subscribe: async () => {
+      throw failure;
+    },
+    subscriptions: [{ event: "blocked", handler: () => {} }],
+    onReady: () => {
+      ready = true;
+    },
+    onError: (error) => errors.push(error),
+  });
+
+  assert.equal(result, false);
+  assert.equal(ready, false);
+  assert.deepEqual(errors, [failure]);
+});
 
 test("an unconfigured build always exposes the unconfigured phase", () => {
   assert.deepEqual(

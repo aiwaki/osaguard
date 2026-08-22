@@ -1101,12 +1101,21 @@ fn compute_status(app: &AppHandle) -> Result<SetupStatus, String> {
     let executable = current_executable()?;
     let installed = installed_application_path(&executable);
     let accessibility_granted = accessibility_trusted_from_app_process();
-    let user = current_user()?;
-    let password_saved = password_exists(&user.account)?;
-    let protected = protected_state()?;
-    let risk_acknowledged = protected != ProtectedState::Missing;
-    let enabled = protected == ProtectedState::Enabled;
-    let watcher_running = watcher_running(app)?;
+    let (password_saved, risk_acknowledged, enabled, watcher_running) = if installed {
+        let user = current_user()?;
+        let password_saved = password_exists(&user.account)?;
+        let protected = protected_state()?;
+        (
+            password_saved,
+            protected != ProtectedState::Missing,
+            protected == ProtectedState::Enabled,
+            watcher_running(app)?,
+        )
+    } else {
+        // A copy launched from a DMG or a build directory must not inspect Keychain
+        // state or discover a watcher owned by the installed application.
+        (false, false, false, false)
+    };
     let configured = installed && accessibility_granted && password_saved && risk_acknowledged;
     let update_status = current_update_status(app);
     Ok(SetupStatus {

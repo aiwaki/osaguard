@@ -1,4 +1,5 @@
 import {
+  bootstrapRuntime,
   normalizeUpdateStatus,
   passwordOutcome,
   updateActionInProgress,
@@ -136,6 +137,10 @@ const copy = {
     upToDateToast: "OsaGuard is up to date.",
     updateAvailableToast: (version) => `OsaGuard ${version} is ready to install.`,
     genericError: "OsaGuard could not complete that action.",
+    startupErrorTitle: "OsaGuard couldn’t start",
+    startupErrorCopy:
+      "The dashboard could not connect to the protected native service. Quit OsaGuard, open it again, and install the newest release if this continues.",
+    retry: "Try again",
   },
   ru: {
     systemLanguage: "Язык системы · Русский",
@@ -264,6 +269,10 @@ const copy = {
     upToDateToast: "Установлена последняя версия OsaGuard.",
     updateAvailableToast: (version) => `OsaGuard ${version} готов к установке.`,
     genericError: "OsaGuard не смог выполнить действие.",
+    startupErrorTitle: "Не удалось запустить OsaGuard",
+    startupErrorCopy:
+      "Панель не смогла подключиться к защищённой нативной части приложения. Закройте OsaGuard и откройте снова; если это повторится, установите последнюю версию.",
+    retry: "Попробовать снова",
   },
 };
 
@@ -532,6 +541,21 @@ function renderDashboard() {
     </section>`;
 }
 
+function renderStartupError(error) {
+  console.error("OsaGuard startup failed", error);
+  app.innerHTML = `
+    <section class="shell">
+      ${brand(status?.version ?? "")}
+      <div class="hero">
+        <h1>${t.startupErrorTitle}</h1>
+        <p class="hero-copy">${t.startupErrorCopy}</p>
+        <button class="button primary" data-action="retry-startup" type="button">
+          ${t.retry}
+        </button>
+      </div>
+    </section>`;
+}
+
 function render() {
   if (!status) return;
   language = status.locale === "ru" ? "ru" : "en";
@@ -606,7 +630,7 @@ function openUninstallConfirmation() {
   });
 }
 
-async function refreshStatus({ quiet = true } = {}) {
+async function refreshStatus({ quiet = true, required = false } = {}) {
   try {
     status = await invoke("get_status");
     if (status.accessibilityGranted) {
@@ -616,6 +640,7 @@ async function refreshStatus({ quiet = true } = {}) {
     render();
   } catch (error) {
     if (!quiet) showToast(errorMessage(error), true);
+    if (required) throw error;
   }
 }
 
@@ -747,6 +772,9 @@ async function handleAction(action) {
       });
       break;
     }
+    case "retry-startup":
+      window.location.reload();
+      break;
     default:
       break;
   }
@@ -774,27 +802,33 @@ modal.addEventListener("cancel", () => {
   modalAction = null;
 });
 
-await Promise.all([
-  listen("password-action-error", () => {
-    showToast(t.passwordSaveError, true);
-  }),
-  listen("runtime-action-error", () => {
-    showToast(t.runtimeActionError, true);
-  }),
-  listen("uninstall-requested", () => {
-    openUninstallConfirmation();
-  }),
-  listen("install-update-requested", () => {
-    handleAction("install-update");
-  }),
-]);
-
-await refreshStatus({ quiet: false });
-
 async function poll() {
   await refreshStatus();
   const delay = status?.configured ? 15000 : 3000;
   window.setTimeout(poll, delay);
 }
 
-window.setTimeout(poll, 3000);
+await bootstrapRuntime({
+  loadStatus: () => refreshStatus({ quiet: false, required: true }),
+  subscribe: listen,
+  subscriptions: [
+    {
+      event: "password-action-error",
+      handler: () => showToast(t.passwordSaveError, true),
+    },
+    {
+      event: "runtime-action-error",
+      handler: () => showToast(t.runtimeActionError, true),
+    },
+    {
+      event: "uninstall-requested",
+      handler: openUninstallConfirmation,
+    },
+    {
+      event: "install-update-requested",
+      handler: () => handleAction("install-update"),
+    },
+  ],
+  onReady: () => window.setTimeout(poll, 3000),
+  onError: renderStartupError,
+});

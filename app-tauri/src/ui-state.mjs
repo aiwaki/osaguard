@@ -53,3 +53,23 @@ export function updateActionInProgress(value) {
   const phase = normalizeUpdateStatus(value).phase;
   return phase === "checking" || phase === "downloading" || phase === "installing";
 }
+
+export async function bootstrapRuntime({
+  loadStatus,
+  subscribe,
+  subscriptions,
+  onReady,
+  onError,
+}) {
+  try {
+    await loadStatus();
+    await Promise.all(
+      subscriptions.map(({ event, handler }) => subscribe(event, handler)),
+    );
+    onReady();
+    return true;
+  } catch (error) {
+    onError(error);
+    return false;
+  }
+}
